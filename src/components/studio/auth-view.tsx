@@ -182,6 +182,7 @@ export function AuthView() {
                 className="w-full"
                 onClick={() => {
                   setUser(null, null)
+                  useAppStore.getState().setGuest(true)
                   navigate({ name: "home" })
                 }}
               >

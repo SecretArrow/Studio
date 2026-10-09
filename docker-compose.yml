@@ -1,0 +1,42 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=file:/app/db/custom.db
+      - AUTH_SECRET=${AUTH_SECRET:-change-me-to-a-long-random-string}
+      # - AI_API_KEY=${AI_API_KEY}
+      # - SMTP_HOST=${SMTP_HOST}
+    volumes:
+      - studio-db:/app/db
+      - studio-uploads:/app/upload
+    restart: unless-stopped
+
+  collab:
+    build: .
+    working_dir: /app/mini-services/collab
+    entrypoint: ["sh", "-c", "bun install && bun index.ts"]
+    ports:
+      - "3003:3003"
+    restart: unless-stopped
+
+  # Production-grade reverse proxy with automatic HTTPS (Caddy):
+  # point studio.example.com at this host, then:
+  #   docker compose --profile prod up caddy
+  caddy:
+    image: caddy:2
+    profile: prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - app
+
+volumes:
+  studio-db:
+  studio-uploads:
+  caddy-data:

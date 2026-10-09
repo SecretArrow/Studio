@@ -61,3 +61,7 @@ dev.log
 /.zscripts/
 /examples/
 /agent-ctx/
+
+# playwright artifacts
+test-results/
+playwright-report/

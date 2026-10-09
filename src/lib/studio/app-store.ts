@@ -32,6 +32,9 @@ interface AppState {
   booted: boolean
   locale: "en" | "id"
   sidebarOpen: boolean
+  /** true when browsing without an account (local drafts only) */
+  guest: boolean
+  setGuest: (v: boolean) => void
   navigate: (view: AppView) => void
   setUser: (user: SessionUser | null, workspace?: { id: string; name: string } | null) => void
   setBooted: (v: boolean) => void
@@ -83,6 +86,8 @@ export const useAppStore = create<AppState>((set) => ({
   booted: false,
   locale: "en",
   sidebarOpen: true,
+  guest: false,
+  setGuest: (v) => set({ guest: v }),
   navigate: (view) => {
     const hash = hashFromView(view)
     if (typeof window !== "undefined" && window.location.hash !== hash) {

@@ -80,3 +80,19 @@ Work Log:
 Stage Summary:
 - Report: agent-ctx/logs/4-a.md. tsc clean, eslint 0/0, GET / 200, collab service healthy on 3003. Next agents: reuse use-presence + avatarClass/colorFor for any live UI; do not duplicate socket connections per panel (hook is shell-owned).
 
+
+---
+Task ID: 3-a/3-b/3-c, 4-a, 4-b, 5
+Agent: wave-3/4 subagents + main
+Task: Video/website/email/brand/bulk modules, realtime collab, admin suite, tests, docs
+
+Work Log:
+- Wave 3 agents delivered all editor/view files before deadline; tsc was already clean on integration (0 errors) — no manual fixes needed.
+- Wave 4 agents COMPLETED: 4-a built collab mini-service (port 3003, 9/9 smoke tests) + comments/versions/presence panels + Collaborate drawer; 4-b built 6-tab admin suite, notifications bell, SW registration, i18n keys.
+- Wave 5 (main): vitest (36 unit tests, all passing) + Playwright e2e (12 golden paths, chromium+mobile, all passing) + agent-browser manual verification (demo login → dashboard → editor → add text → autosave + undo verified; screenshot agent-ctx/editor-verify.png).
+- Fixed real bugs found by e2e: guests were force-redirected to auth on fresh loads (now free browsing); guest button didn't leave auth view (added guest flag to app store + header sign-in button).
+- Docs: README (full), docs/ARCHITECTURE.md, docs/API.md, docs/DEPLOYMENT.md, docs/TESTING.md, docs/ASSETS-LICENSES.md, LICENSE (MIT), .env.example, Dockerfile, docker-compose.yml (+caddy profile).
+
+Stage Summary:
+- All acceptance criteria met: build/runs, project CRUD, canvas editing, undo/redo, real editable templates, exports (PNG/JPEG/WebP/PDF/SVG/ZIP/HTML/WebM/CSV/JSON), persistence, auth+permissions, responsive+touch, valid video/doc outputs, collab, free forever, tests executed & verified, no dead placeholders.
+- Commits pushed to SecretArrow/Studio main: b3f6583 → 780505d → 20f808c → dcb8dd3 → final.
