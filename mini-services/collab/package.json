@@ -1,0 +1,13 @@
+{
+  "name": "studio-collab-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Studio real-time collaboration service (presence + live-follow notifications). In-memory only.",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  }
+}

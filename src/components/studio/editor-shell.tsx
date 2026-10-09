@@ -12,8 +12,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { ToastAction } from "@/components/ui/toast"
 import { useToast } from "@/hooks/use-toast"
-import { ArrowLeft, Download, Share2, Check, Loader2, Presentation, Cloud, CloudOff } from "lucide-react"
+import { cn } from "@/lib/utils"
+import { usePresence, avatarClass } from "@/components/studio/collab/use-presence"
+import { CollabPanel } from "@/components/studio/collab/collab-panel"
+import { ArrowLeft, Download, Share2, Check, Loader2, Presentation, Cloud, CloudOff, Users } from "lucide-react"
 
 interface LoadedState {
   meta: { id: string; name: string; type: string; width: number; height: number }
@@ -84,6 +89,40 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
     }
   }, [projectId, share])
 
+  /* ---------------- collaboration presence ---------------- */
+  const [collabOpen, setCollabOpen] = useState(false)
+
+  const handleRemoteDocUpdate = useCallback(
+    (info: { updatedAt: string; userName: string }) => {
+      toast({
+        title: `Project updated by ${info.userName}`,
+        description: "A collaborator saved new changes. Reload to see the latest version.",
+        action: (
+          <ToastAction altText="Reload editor" onClick={() => window.location.reload()}>
+            Reload
+          </ToastAction>
+        ),
+      })
+    },
+    [toast],
+  )
+
+  const {
+    status: presenceStatus,
+    members: collabMembers,
+    selfColor,
+    notifyEditing,
+    sendDocUpdate,
+  } = usePresence({
+    projectId: loaded?.cloud ? projectId : null,
+    displayName: user?.name || user?.email || "Guest",
+    userId: user?.id ?? null,
+    enabled: !!loaded?.cloud,
+    onRemoteDocUpdate: handleRemoteDocUpdate,
+  })
+
+  const selfName = user?.name || user?.email || "Guest"
+
   /* ---------------- autosave ---------------- */
   const persistCloud = useCallback(
     async (doc: DesignDoc, thumbnail: string | null) => {
@@ -119,12 +158,14 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
         baseUpdatedAt.current = body.project.updatedAt
         setSaveState("saved")
         dirtyRef.current = false
+        // Live-follow: tell the room a new revision was saved (receivers toast + reload).
+        sendDocUpdate(JSON.stringify(doc), body.project.updatedAt)
       } catch {
         setSaveState("dirty")
         toast({ title: "Offline — changes kept locally", description: "We will keep trying to save your work." })
       }
     },
-    [projectId, share, toast],
+    [projectId, share, toast, sendDocUpdate],
   )
 
   const scheduleSave = useCallback(() => {
@@ -185,9 +226,10 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
   const onDocChange = useCallback(
     (doc: DesignDoc) => {
       docRef.current = doc
+      notifyEditing()
       scheduleSave()
     },
-    [scheduleSave],
+    [scheduleSave, notifyEditing],
   )
 
   const registerHandle = useCallback((h: EditorHandle | null) => {
@@ -278,6 +320,38 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
         </span>
 
         <div className="ml-auto flex items-center gap-1">
+          {loaded.cloud && (
+            <>
+              {presenceStatus === "live" && collabMembers.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCollabOpen(true)}
+                  className="hidden h-8 items-center pr-1 sm:flex"
+                  aria-label={`${collabMembers.length} collaborator${collabMembers.length === 1 ? "" : "s"} online — open the collaborate panel`}
+                >
+                  {collabMembers.slice(0, 3).map((m) => (
+                    <span
+                      key={m.key}
+                      className={cn(
+                        "-ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border-2 border-background text-[10px] font-semibold text-white first:ml-0",
+                        avatarClass(m.color),
+                      )}
+                    >
+                      {m.name.charAt(0).toUpperCase()}
+                    </span>
+                  ))}
+                  {collabMembers.length > 3 && (
+                    <span className="-ml-1.5 flex h-6 items-center rounded-full border-2 border-background bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">
+                      +{collabMembers.length - 3}
+                    </span>
+                  )}
+                </button>
+              )}
+              <Button variant="ghost" size="sm" className="min-h-[36px]" onClick={() => setCollabOpen(true)}>
+                <Users className="h-4 w-4" /> <span className="hidden md:inline">Collaborate</span>
+              </Button>
+            </>
+          )}
           {editorKind === "presentation" && canEdit && (
             <Button variant="ghost" size="sm" className="min-h-[36px]" onClick={() => handleRef.current?.present?.()}>
               <Presentation className="h-4 w-4" /> <span className="hidden md:inline">Present</span>
@@ -379,6 +453,29 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Collaborate drawer: comments | versions | presence */}
+      <Sheet open={collabOpen} onOpenChange={setCollabOpen}>
+        <SheetContent side="right" className="w-full gap-0 sm:max-w-md">
+          <SheetHeader className="border-b">
+            <SheetTitle className="text-base">Collaborate</SheetTitle>
+            <SheetDescription className="text-xs">
+              Comments, version history and live presence for this project.
+            </SheetDescription>
+          </SheetHeader>
+          <CollabPanel
+            projectId={projectId}
+            share={share}
+            role={loaded.role}
+            members={collabMembers}
+            status={presenceStatus}
+            selfName={selfName}
+            selfColor={selfColor}
+            signedIn={!!user}
+            currentUserEmail={user?.email ?? null}
+          />
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

@@ -23,6 +23,9 @@ export function StudioApp() {
     if (started.current) return
     started.current = true
     installHashRouter()
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {})
+    }
     const initial = startView()
     useAppStore.setState({ view: initial })
     api

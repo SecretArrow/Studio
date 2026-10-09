@@ -24,6 +24,7 @@ import { BrandView } from "./views/brand-view"
 import { BulkView } from "./views/bulk-view"
 import { SettingsView } from "./views/settings-view"
 import { AdminView } from "./views/admin-view"
+import { NotificationsBell } from "@/components/studio/notifications-bell"
 
 interface ProjectRow {
   id: string
@@ -154,6 +155,7 @@ export function Dashboard() {
           />
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <NotificationsBell />
           <Button onClick={() => setNewOpen(true)} size="sm" className="min-h-[36px]">
             <Plus className="h-4 w-4" /> <span className="hidden sm:inline">{t("nav.newDesign")}</span>
           </Button>
