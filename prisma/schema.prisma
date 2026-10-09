@@ -1,0 +1,262 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Roles are plain strings (SQLite has no enums):
+// User.role: "user" | "admin"
+// Project.type: "canvas" | "presentation" | "video" | "photo" | "doc" | "whiteboard" | "website" | "email"
+// ShareLink.role: "viewer" | "commenter" | "editor"
+// Asset.kind: "image" | "video" | "audio" | "font" | "svg"
+// JSON fields are stored as String (SQLite has no Json type).
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String?
+  passwordHash    String
+  avatarUrl       String?
+  role            String    @default("user")
+  locale          String    @default("en")
+  theme           String?
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspaces    WorkspaceMember[]
+  projects      Project[]
+  comments      Comment[]
+  assets        Asset[]
+  brandKits     BrandKit[]
+  notifications Notification[]
+  versions      ProjectVersion[]
+  bulkJobs      BulkJob[]
+  auditLogs     AuditLog[]
+  tokens        AuthToken[]
+  shareLinks    ShareLink[]       @relation("ShareLinks")
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  ownerId   String
+  createdAt DateTime @default(now())
+
+  members  WorkspaceMember[]
+  projects Project[]
+  folders  Folder[]
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String   @default("member") // owner | admin | member
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+}
+
+model Folder {
+  id          String   @id @default(cuid())
+  name        String
+  workspaceId String
+  parentId    String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent    Folder?   @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]  @relation("FolderTree")
+  projects  Project[]
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  name        String
+  type        String    @default("canvas")
+  width       Int       @default(1080)
+  height      Int       @default(1080)
+  contentJson String
+  thumbnail   String?
+  ownerId     String
+  workspaceId String
+  folderId    String?
+  favorite    Boolean   @default(false)
+  shareMode   String    @default("private") // private | link-view | link-comment | link-edit
+  templateId  String?
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  owner      User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  workspace  Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder     Folder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  template   Template?        @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  versions   ProjectVersion[]
+  comments   Comment[]
+  shareLinks ShareLink[]
+
+  @@index([ownerId, updatedAt])
+  @@index([workspaceId, deletedAt])
+}
+
+model ProjectVersion {
+  id          String   @id @default(cuid())
+  projectId   String
+  label       String?
+  contentJson String
+  thumbnail   String?
+  createdById String
+  createdAt   DateTime @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User    @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  projectId String
+  pageId    String?
+  elementId String?
+  userId    String
+  body      String
+  parentId  String?
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+model Template {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  category    String
+  type        String   @default("canvas")
+  tags        String   @default("[]")
+  width       Int
+  height      Int
+  contentJson String
+  thumbnail   String?
+  featured    Boolean  @default(false)
+  license     String   @default("CC0")
+  createdAt   DateTime @default(now())
+
+  projects Project[]
+}
+
+model Asset {
+  id          String   @id @default(cuid())
+  ownerId     String?
+  kind        String
+  url         String
+  filename    String
+  mime        String
+  size        Int
+  width       Int?
+  height      Int?
+  license     String   @default("CC0")
+  attribution String?
+  tags        String   @default("[]")
+  createdAt   DateTime @default(now())
+
+  owner User? @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, kind])
+}
+
+model BrandKit {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  colorsJson  String   @default("[]")
+  fontsJson   String   @default("[]")
+  logosJson   String   @default("[]")
+  guidelines  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+}
+
+model ShareLink {
+  id          String    @id @default(cuid())
+  projectId   String
+  token       String    @unique
+  role        String    @default("viewer")
+  revoked     Boolean   @default(false)
+  expiresAt   DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User    @relation("ShareLinks", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  userId      String
+  type        String
+  payloadJson String   @default("{}")
+  read        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+}
+
+model BulkJob {
+  id        String   @id @default(cuid())
+  ownerId   String
+  projectId String?
+  status    String   @default("pending") // pending | running | done | failed | cancelled
+  total     Int      @default(0)
+  done      Int      @default(0)
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  target    String?
+  metaJson  String   @default("{}")
+  createdAt DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+}
+
+model AuthToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String
+  purpose   String // reset | verify
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+}
