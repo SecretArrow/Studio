@@ -1,0 +1,702 @@
+    39→    39→    39→const MIN_ZOOM = 0.04
+    40→    40→    40→const MAX_ZOOM = 8
+    41→    41→    41→
+    42→    42→    42→interface StageViewProps {
+    43→    43→    43→  api: CanvasApi
+    44→    44→    44→  editingId: string | null
+    45→    45→    45→  onViewportResize: (w: number, h: number) => void
+    46→    46→    46→  onContextMenu: (screenX: number, screenY: number, elementId: string | null) => void
+    47→    47→    47→}
+    48→    48→    48→
+    49→    49→    49→interface DragState {
+    50→    50→    50→  id: string
+    51→    51→    51→  groupId?: string
+    52→    52→    52→  orig: Map<string, { x: number; y: number }>
+    53→    53→    53→}
+    54→    54→    54→
+    55→    55→    55→export function StageView({ api, editingId, onViewportResize, onContextMenu }: StageViewProps) {
+    56→    56→    56→  const wrapRef = useRef<HTMLDivElement>(null)
+    57→    57→    57→  const stageRef = useRef<Konva.Stage>(null)
+    58→    58→    58→  const contentLayerRef = useRef<Konva.Layer>(null)
+    59→    59→    59→  const overlayLayerRef = useRef<Konva.Layer>(null)
+    60→    60→    60→  const trRef = useRef<Konva.Transformer>(null)
+    61→    61→    61→  const marqueeRef = useRef<Konva.Rect>(null)
+    62→    62→    62→
+    63→    63→    63→  const [size, setSize] = useState({ w: 800, h: 600 })
+    64→    64→    64→  const [editingRect, setEditingRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
+    65→    65→    65→
+    66→    66→    66→  const dragState = useRef<DragState | null>(null)
+    67→    67→    67→  const panState = useRef<{ active: boolean; lastX: number; lastY: number } | null>(null)
+    68→    68→    68→  const spaceDown = useRef(false)
+    69→    69→    69→  const marquee = useRef<{ active: boolean; startX: number; startY: number; additive: boolean } | null>(null)
+    70→    70→    70→  const longPress = useRef<{ timer: ReturnType<typeof setTimeout> | null; x: number; y: number; targetId: string | null } | null>(null)
+    71→    71→    71→  const gestureCommit = useRef<ReturnType<typeof setTimeout> | null>(null)
+    72→    72→    72→  const viewRef = useRef(api.view)
+    73→    73→    73→  useEffect(() => {
+    74→    74→    74→    viewRef.current = api.view
+    75→    75→    75→  }, [api.view])
+    76→    76→    76→
+    77→    77→    77→  const { doc, page, canEdit, selectedIds } = api
+    78→    78→    78→  const elements = page.elements
+    79→    79→    79→  const images = useProcessedImages(elements, page.background)
+    80→    80→    80→  const qrImages = useQrImages(elements)
+    81→    81→    81→
+    82→    82→    82→  /* ------------------------- container sizing ------------------------- */
+    83→    83→    83→  useEffect(() => {
+    84→    84→    84→    const wrap = wrapRef.current
+    85→    85→    85→    if (!wrap) return
+    86→    86→    86→    const ro = new ResizeObserver((entries) => {
+    87→    87→    87→      const r = entries[0]?.contentRect
+    88→    88→    88→      if (r) {
+    89→    89→    89→        setSize({ w: Math.max(100, r.width), h: Math.max(100, r.height) })
+    90→    90→    90→        onViewportResize(r.width, r.height)
+    91→    91→    91→      }
+    92→    92→    92→    })
+    93→    93→    93→    ro.observe(wrap)
+    94→    94→    94→    return () => ro.disconnect()
+    95→    95→    95→  }, [onViewportResize])
+    96→    96→    96→
+    97→    97→    97→  /* ------------------------- guides (imperative) ------------------------- */
+    98→    98→    98→  const drawGuides = useCallback((guides: GuideLine[]) => {
+    99→    99→    99→    const layer = overlayLayerRef.current
+   100→   100→   100→    if (!layer) return
+   101→   101→   101→    layer.destroyChildren()
+   102→   102→   102→    for (const g of guides) {
+   103→   103→   103→      const line = new Konva.Line({
+   104→   104→   104→        points: g.axis === "v" ? [g.pos, g.from, g.pos, g.to] : [g.from, g.pos, g.to, g.pos],
+   105→   105→   105→        stroke: "#ec4899",
+   106→   106→   106→        strokeWidth: 1 / (viewRef.current.zoom || 1),
+   107→   107→   107→        dash: [4 / (viewRef.current.zoom || 1), 4 / (viewRef.current.zoom || 1)],
+   108→   108→   108→        listening: false,
+   109→   109→   109→      })
+   110→   110→   110→      layer.add(line)
+   111→   111→   111→    }
+   112→   112→   112→    layer.batchDraw()
+   113→   113→   113→  }, [])
+   114→   114→   114→
+   115→   115→   115→  const clearGuides = useCallback(() => {
+   116→   116→   116→    const layer = overlayLayerRef.current
+   117→   117→   117→    if (!layer) return
+   118→   118→   118→    layer.destroyChildren()
+   119→   119→   119→    layer.batchDraw()
+   120→   120→   120→  }, [])
+   121→   121→   121→
+   122→   122→   122→  /* ------------------------- transformer sync ------------------------- */
+   123→   123→   123→  useEffect(() => {
+   124→   124→   124→    const layer = contentLayerRef.current
+   125→   125→   125→    const tr = trRef.current
+   126→   126→   126→    if (!layer || !tr) return
+   127→   127→   127→    const nodes = layer.getChildren((n: Konva.Node) => n.getAttr("elementId") && selectedIds.includes(String(n.getAttr("elementId"))))
+   128→   128→   128→    tr.nodes(nodes as Konva.Node[])
+   129→   129→   129→    tr.getLayer()?.batchDraw()
+   130→   130→   130→  }, [selectedIds, elements, size])
+   131→   131→   131→
+   132→   132→   132→  /* ------------------------- keyboard: space pan cursor ------------------------- */
+   133→   133→   133→  useEffect(() => {
+   134→   134→   134→    function onKeyDown(e: KeyboardEvent) {
+   135→   135→   135→      if (e.code === "Space" && !isTextEntry(e.target)) {
+   136→   136→   136→        spaceDown.current = true
+   137→   137→   137→        if (wrapRef.current && !e.repeat) wrapRef.current.style.cursor = "grab"
+   138→   138→   138→      }
+   139→   139→   139→    }
+   140→   140→   140→    function onKeyUp(e: KeyboardEvent) {
+   141→   141→   141→      if (e.code === "Space") {
+   142→   142→   142→        spaceDown.current = false
+   143→   143→   143→        if (wrapRef.current) wrapRef.current.style.cursor = ""
+   144→   144→   144→      }
+   145→   145→   145→    }
+   146→   146→   146→    window.addEventListener("keydown", onKeyDown)
+   147→   147→   147→    window.addEventListener("keyup", onKeyUp)
+   148→   148→   148→    return () => {
+   149→   149→   149→      window.removeEventListener("keydown", onKeyDown)
+   150→   150→   150→      window.removeEventListener("keyup", onKeyUp)
+   151→   151→   151→    }
+   152→   152→   152→  }, [])
+   153→   153→   153→
+   154→   154→   154→  /* ------------------------- commit gesture (pan/zoom) ------------------------- */
+   155→   155→   155→  const commitGesture = useCallback(() => {
+   156→   156→   156→    const layer = contentLayerRef.current
+   157→   157→   157→    if (!layer) return
+   158→   158→   158→    if (gestureCommit.current) clearTimeout(gestureCommit.current)
+   159→   159→   159→    gestureCommit.current = setTimeout(() => {
+   160→   160→   160→      api.setView({
+   161→   161→   161→        zoom: layer.scaleX(),
+   162→   162→   162→        panX: layer.x(),
+   163→   163→   163→        panY: layer.y(),
+   164→   164→   164→      })
+   165→   165→   165→    }, 140)
+   166→   166→   166→  }, [api])
+   167→   167→   167→
+   168→   168→   168→  /* keep layer transform in sync with view state when it changes externally */
+   169→   169→   169→  useEffect(() => {
+   170→   170→   170→    const layer = contentLayerRef.current
+   171→   171→   171→    if (!layer) return
+   172→   172→   172→    layer.position({ x: api.view.panX, y: api.view.panY })
+   173→   173→   173→    layer.scale({ x: api.view.zoom, y: api.view.zoom })
+   174→   174→   174→    layer.batchDraw()
+   175→   175→   175→  }, [api.view.zoom, api.view.panX, api.view.panY])
+   176→   176→   176→
+   177→   177→   177→  /* ------------------------- element handlers ------------------------- */
+   178→   178→   178→
+   179→   179→   179→  const memberIdsOf = useCallback(
+   180→   180→   180→    (el: DesignElement): string[] => {
+   181→   181→   181→      if (!el.groupId) return [el.id]
+   182→   182→   182→      return elements.filter((m) => m.groupId === el.groupId).map((m) => m.id)
+   183→   183→   183→    },
+   184→   184→   184→    [elements],
+   185→   185→   185→  )
+   186→   186→   186→
+   187→   187→   187→  const handleSelect = useCallback(
+   188→   188→   188→    (el: DesignElement, additive: boolean) => {
+   189→   189→   189→      const ids = el.groupId ? memberIdsOf(el) : [el.id]
+   190→   190→   190→      api.selectIds(ids, additive)
+   191→   191→   191→    },
+   192→   192→   192→    [api, memberIdsOf],
+   193→   193→   193→  )
+   194→   194→   194→
+   195→   195→   195→  function onDragStart(e: Konva.KonvaEventObject<DragEvent>, el: DesignElement) {
+   196→   196→   196→    const layer = contentLayerRef.current
+   197→   197→   197→    if (!layer) return
+   198→   198→   198→    const orig = new Map<string, { x: number; y: number }>()
+   199→   199→   199→    for (const id of memberIdsOf(el)) {
+   200→   200→   200→      const node = layer.findOne(`#${id}`)
+   201→   201→   201→      if (node) orig.set(id, { x: node.x(), y: node.y() })
+   202→   202→   202→    }
+   203→   203→   203→    dragState.current = { id: el.id, groupId: el.groupId, orig }
+   204→   204→   204→  }
+   205→   205→   205→
+   206→   206→   206→  function onDragMove(e: Konva.KonvaEventObject<DragEvent>, el: DesignElement) {
+   207→   207→   207→    const node = e.target
+   208→   208→   208→    const layer = contentLayerRef.current
+   209→   209→   209→    if (!layer) return
+   210→   210→   210→    const zoom = layer.scaleX() || 1
+   211→   211→   211→    const selectedSet = new Set(memberIdsOf(el))
+   212→   212→   212→    const others = elements
+   213→   213→   213→      .filter((o) => !o.hidden && !selectedSet.has(o.id))
+   214→   214→   214→      .map((o) => ({ id: o.id, x: o.x, y: o.y, width: o.width, height: o.height }))
+   215→   215→   215→    const snap = computeSnap(
+   216→   216→   216→      { id: el.id, x: node.x(), y: node.y(), width: el.width, height: el.height },
+   217→   217→   217→      others,
+   218→   218→   218→      {
+   219→   219→   219→        threshold: 6 / zoom,
+   220→   220→   220→        gridSize: api.view.snapToGrid ? api.view.gridSize : null,
+   221→   221→   221→        pageW: doc.width,
+   222→   222→   222→        pageH: doc.height,
+   223→   223→   223→      },
+   224→   224→   224→    )
+   225→   225→   225→    node.position({ x: node.x() + snap.dx, y: node.y() + snap.dy })
+   226→   226→   226→    drawGuides(snap.guides)
+   227→   227→   227→
+   228→   228→   228→    const st = dragState.current
+   229→   229→   229→    if (st && el.groupId) {
+   230→   230→   230→      const orig = st.orig.get(el.id)
+   231→   231→   231→      if (orig) {
+   232→   232→   232→        const dx = node.x() - orig.x
+   233→   233→   233→        const dy = node.y() - orig.y
+   234→   234→   234→        for (const [id, o] of st.orig) {
+   235→   235→   235→          if (id === el.id) continue
+   236→   236→   236→          const n = layer.findOne(`#${id}`)
+   237→   237→   237→          if (n) n.position({ x: o.x + dx, y: o.y + dy })
+   238→   238→   238→        }
+   239→   239→   239→      }
+   240→   240→   240→    }
+   241→   241→   241→    layer.batchDraw()
+   242→   242→   242→  }
+   243→   243→   243→
+   244→   244→   244→  function onDragEnd(e: Konva.KonvaEventObject<DragEvent>, el: DesignElement) {
+   245→   245→   245→    const node = e.target
+   246→   246→   246→    const patches: ElementPatch[] = []
+   247→   247→   247→    const st = dragState.current
+   248→   248→   248→    if (st && el.groupId) {
+   249→   249→   249→      const orig = st.orig.get(el.id)
+   250→   250→   250→      if (orig) {
+   251→   251→   251→        const dx = node.x() - orig.x
+   252→   252→   252→        const dy = node.y() - orig.y
+   253→   253→   253→        for (const [id, o] of st.orig) {
+   254→   254→   254→          if (id === el.id) patches.push({ id, patch: { x: Math.round(node.x()), y: Math.round(node.y()) } })
+   255→   255→   255→          else patches.push({ id, patch: { x: Math.round(o.x + dx), y: Math.round(o.y + dy) } })
+   256→   256→   256→        }
+   257→   257→   257→      }
+   258→   258→   258→    } else {
+   259→   259→   259→      patches.push({ id: el.id, patch: { x: Math.round(node.x()), y: Math.round(node.y()) } })
+   260→   260→   260→    }
+   261→   261→   261→    dragState.current = null
+   262→   262→   262→    clearGuides()
+   263→   263→   263→    api.updateElements(patches)
+   264→   264→   264→  }
+   265→   265→   265→
+   266→   266→   266→  function onTransformEnd(e: Konva.KonvaEventObject<Event>, el: DesignElement) {
+   267→   267→   267→    const node = e.target
+   268→   268→   268→    const sx = node.scaleX()
+   269→   269→   269→    const sy = node.scaleY()
+   270→   270→   270→    node.scaleX(1)
+   271→   271→   271→    node.scaleY(1)
+   272→   272→   272→    let width = Math.max(8, el.width * sx)
+   273→   273→   273→    let height = Math.max(8, el.height * sy)
+   274→   274→   274→    const patch: Record<string, unknown> = {
+   275→   275→   275→      x: Math.round(node.x()),
+   276→   276→   276→      y: Math.round(node.y()),
+   277→   277→   277→      width: Math.round(width),
+   278→   278→   278→      height: Math.round(height),
+   279→   279→   279→      rotation: Math.round(node.rotation() * 10) / 10,
+   280→   280→   280→    }
+   281→   281→   281→    if (el.type === "text") {
+   282→   282→   282→      // keep font size constant while resizing the box; grow stored height if needed
+   283→   283→   283→      const t = el as TextElement
+   284→   284→   284→      const measured = measureTextBlockHeight(
+   285→   285→   285→        {
+   286→   286→   286→          text: t.text,
+   287→   287→   287→          fontFamily: t.fontFamily,
+   288→   288→   288→          fontSize: t.fontSize,
+   289→   289→   289→          fontWeight: t.fontWeight,
+   290→   290→   290→          italic: t.italic,
+   291→   291→   291→          uppercase: t.uppercase,
+   292→   292→   292→          lineHeight: t.lineHeight,
+   293→   293→   293→          letterSpacing: t.letterSpacing,
+   294→   294→   294→          listStyle: t.listStyle,
+   295→   295→   295→        },
+   296→   296→   296→        patch.width as number,
+   297→   297→   297→      )
+   298→   298→   298→      patch.height = Math.max(measured, Math.round(height))
+   299→   299→   299→    }
+   300→   300→   300→    api.updateElements([{ id: el.id, patch: patch as Partial<DesignElement> }])
+   301→   301→   301→  }
+   302→   302→   302→
+   303→   303→   303→  /* ------------------------- stage interactions ------------------------- */
+   304→   304→   304→
+   305→   305→   305→  const getStagePos = useCallback((): { x: number; y: number } | null => {
+   306→   306→   306→    const stage = stageRef.current
+   307→   307→   307→    if (!stage) return null
+   308→   308→   308→    const p = stage.getPointerPosition()
+   309→   309→   309→    return p ? { x: p.x, y: p.y } : null
+   310→   310→   310→  }, [])
+   311→   311→   311→
+   312→   312→   312→  function beginPan(x: number, y: number) {
+   313→   313→   313→    panState.current = { active: true, lastX: x, lastY: y }
+   314→   314→   314→    if (wrapRef.current) wrapRef.current.style.cursor = "grabbing"
+   315→   315→   315→  }
+   316→   316→   316→
+   317→   317→   317→  function movePan(x: number, y: number) {
+   318→   318→   318→    const layer = contentLayerRef.current
+   319→   319→   319→    const pan = panState.current
+   320→   320→   320→    if (!layer || !pan?.active) return
+   321→   321→   321→    layer.position({ x: layer.x() + (x - pan.lastX), y: layer.y() + (y - pan.lastY) })
+   322→   322→   322→    layer.batchDraw()
+   323→   323→   323→    pan.lastX = x
+   324→   324→   324→    pan.lastY = y
+   325→   325→   325→  }
+   326→   326→   326→
+   327→   327→   327→  function endPan() {
+   328→   328→   328→    if (!panState.current?.active) return
+   329→   329→   329→    panState.current = null
+   330→   330→   330→    if (wrapRef.current) wrapRef.current.style.cursor = spaceDown.current ? "grab" : ""
+   331→   331→   331→    commitGesture()
+   332→   332→   332→  }
+   333→   333→   333→
+   334→   334→   334→  function onStageMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
+   335→   335→   335→    const stage = stageRef.current
+   336→   336→   336→    if (!stage) return
+   337→   337→   337→    const pos = getStagePos()
+   338→   338→   338→    if (!pos) return
+   339→   339→   339→    const middleButton = e.evt.button === 1
+   340→   340→   340→    if (spaceDown.current || middleButton) {
+   341→   341→   341→      e.evt.preventDefault()
+   342→   342→   342→      beginPan(pos.x, pos.y)
+   343→   343→   343→      return
+   344→   344→   344→    }
+   345→   345→   345→    if (e.target === stage && canEdit) {
+   346→   346→   346→      // begin rubber-band selection
+   347→   347→   347→      const layer = contentLayerRef.current
+   348→   348→   348→      const rel = layer ? layer.getRelativePointerPosition() : null
+   349→   349→   349→      marquee.current = { active: true, startX: rel?.x ?? 0, startY: rel?.y ?? 0, additive: e.evt.shiftKey }
+   350→   350→   350→      const m = marqueeRef.current
+   351→   351→   351→      if (m) {
+   352→   352→   352→        m.position({ x: rel?.x ?? 0, y: rel?.y ?? 0 })
+   353→   353→   353→        m.size({ width: 0, height: 0 })
+   354→   354→   354→        m.visible(true)
+   355→   355→   355→        m.getLayer()?.batchDraw()
+   356→   356→   356→      }
+   357→   357→   357→    } else if (e.target === stage) {
+   358→   358→   358→      api.selectIds([])
+   359→   359→   359→    }
+   360→   360→   360→  }
+   361→   361→   361→
+   362→   362→   362→  function onStageMouseMove(e: Konva.KonvaEventObject<MouseEvent>) {
+   363→   363→   363→    const pos = getStagePos()
+   364→   364→   364→    if (!pos) return
+   365→   365→   365→    if (panState.current?.active) {
+   366→   366→   366→      movePan(pos.x, pos.y)
+   367→   367→   367→      return
+   368→   368→   368→    }
+   369→   369→   369→    const mq = marquee.current
+   370→   370→   370→    const m = marqueeRef.current
+   371→   371→   371→    if (mq?.active && m) {
+   372→   372→   372→      const layer = contentLayerRef.current
+   373→   373→   373→      const rel = layer ? layer.getRelativePointerPosition() : null
+   374→   374→   374→      if (!rel) return
+   375→   375→   375→      m.position({ x: Math.min(mq.startX, rel.x), y: Math.min(mq.startY, rel.y) })
+   376→   376→   376→      m.size({ width: Math.abs(rel.x - mq.startX), height: Math.abs(rel.y - mq.startY) })
+   377→   377→   377→      m.getLayer()?.batchDraw()
+   378→   378→   378→    }
+   379→   379→   379→    void e
+   380→   380→   380→  }
+   381→   381→   381→
+   382→   382→   382→  function onStageMouseUp() {
+   383→   383→   383→    if (panState.current?.active) {
+   384→   384→   384→      endPan()
+   385→   385→   385→      return
+   386→   386→   386→    }
+   387→   387→   387→    const mq = marquee.current
+   388→   388→   388→    const m = marqueeRef.current
+   389→   389→   389→    if (mq?.active && m) {
+   390→   390→   390→      m.visible(false)
+   391→   391→   391→      m.getLayer()?.batchDraw()
+   392→   392→   392→      const box = {
+   393→   393→   393→        x: Math.min(mq.startX, m.x()),
+   394→   394→   394→        y: Math.min(mq.startY, m.y()),
+   395→   395→   395→        width: m.width(),
+   396→   396→   396→        height: m.height(),
+   397→   397→   397→      }
+   398→   398→   398→      marquee.current = null
+   399→   399→   399→      if (box.width > 3 || box.height > 3) {
+   400→   400→   400→        const hits = elements
+   401→   401→   401→          .filter((el) => !el.hidden && !el.locked)
+   402→   402→   402→          .filter((el) => el.x < box.x + box.width && el.x + el.width > box.x && el.y < box.y + box.height && el.y + el.height > box.y)
+   403→   403→   403→          .flatMap((el) => (el.groupId ? memberIdsOf(el) : [el.id]))
+   404→   404→   404→        api.selectIds(Array.from(new Set(hits)), mq.additive)
+   405→   405→   405→      } else if (!mq.additive) {
+   406→   406→   406→        // simple click on empty canvas clears the selection
+   407→   407→   407→        api.selectIds([])
+   408→   408→   408→      }
+   409→   409→   409→    }
+   410→   410→   410→  }
+   411→   411→   411→
+   412→   412→   412→  /* touch: pinch zoom + pan, long-press context menu */
+   413→   413→   413→  const touchGesture = useRef<{ startDist: number; startScale: number; startCenter: { x: number; y: number }; startLayerPos: { x: number; y: number } } | null>(null)
+   414→   414→   414→
+   415→   415→   415→  function onStageTouchStart(e: Konva.KonvaEventObject<TouchEvent>) {
+   416→   416→   416→    const stage = stageRef.current
+   417→   417→   417→    if (!stage) return
+   418→   418→   418→    const touches = e.evt.touches
+   419→   419→   419→    const pos = getStagePos()
+   420→   420→   420→    // long-press
+   421→   421→   421→    if (pos && touches.length === 1) {
+   422→   422→   422→      const targetId = e.target === stage ? null : String((e.target as Konva.Node).getAttr("elementId") ?? "")
+   423→   423→   423→      longPress.current = {
+   424→   424→   424→        timer: setTimeout(() => {
+   425→   425→   425→          longPress.current = null
+   426→   426→   426→          onContextMenu(pos.x + (stage.container().getBoundingClientRect().left), pos.y + (stage.container().getBoundingClientRect().top), targetId)
+   427→   427→   427→          if (navigator.vibrate) navigator.vibrate(10)
+   428→   428→   428→        }, 600),
+   429→   429→   429→        x: pos.x,
+   430→   430→   430→        y: pos.y,
+   431→   431→   431→        targetId,
+   432→   432→   432→      }
+   433→   433→   433→    }
+   434→   434→   434→    if (touches.length === 2) {
+   435→   435→   435→      if (longPress.current?.timer) clearTimeout(longPress.current.timer)
+   436→   436→   436→      const [a, b] = [touches[0], touches[1]]
+   437→   437→   437→      const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+   438→   438→   438→      const layer = contentLayerRef.current
+   439→   439→   439→      touchGesture.current = {
+   440→   440→   440→        startDist: dist || 1,
+   441→   441→   441→        startScale: layer?.scaleX() ?? 1,
+   442→   442→   442→        startCenter: { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 },
+   443→   443→   443→        startLayerPos: { x: layer?.x() ?? 0, y: layer?.y() ?? 0 },
+   444→   444→   444→      }
+   445→   445→   445→    } else if (e.target === stage) {
+   446→   446→   446→      if (pos) beginPan(pos.x, pos.y)
+   447→   447→   447→    }
+   448→   448→   448→  }
+   449→   449→   449→
+   450→   450→   450→  function onStageTouchMove(e: Konva.KonvaEventObject<TouchEvent>) {
+   451→   451→   451→    const stage = stageRef.current
+   452→   452→   452→    const pos = getStagePos()
+   453→   453→   453→    if (longPress.current && pos) {
+   454→   454→   454→      const moved = Math.hypot(pos.x - longPress.current.x, pos.y - longPress.current.y)
+   455→   455→   455→      if (moved > 8 && longPress.current.timer) {
+   456→   456→   456→        clearTimeout(longPress.current.timer)
+   457→   457→   457→        longPress.current = null
+   458→   458→   458→      }
+   459→   459→   459→    }
+   460→   460→   460→    const touches = e.evt.touches
+   461→   461→   461→    const layer = contentLayerRef.current
+   462→   462→   462→    if (touches.length === 2 && layer && touchGesture.current) {
+   463→   463→   463→      e.evt.preventDefault()
+   464→   464→   464→      const [a, b] = [touches[0], touches[1]]
+   465→   465→   465→      const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+   466→   466→   466→      const scale = clamp(touchGesture.current.startScale * (dist / touchGesture.current.startDist), MIN_ZOOM, MAX_ZOOM)
+   467→   467→   467→      const rect = stage!.container().getBoundingClientRect()
+   468→   468→   468→      const cx = touchGesture.current.startCenter.x - rect.left
+   469→   469→   469→      const cy = touchGesture.current.startCenter.y - rect.top
+   470→   470→   470→      const g = touchGesture.current
+   471→   471→   471→      const docX = (cx - g.startLayerPos.x) / g.startScale
+   472→   472→   472→      const docY = (cy - g.startLayerPos.y) / g.startScale
+   473→   473→   473→      const curCenterX = (a.clientX + b.clientX) / 2 - rect.left
+   474→   474→   474→      const curCenterY = (a.clientY + b.clientY) / 2 - rect.top
+   475→   475→   475→      layer.scale({ x: scale, y: scale })
+   476→   476→   476→      layer.position({ x: curCenterX - docX * scale, y: curCenterY - docY * scale })
+   477→   477→   477→      layer.batchDraw()
+   478→   478→   478→      commitGesture()
+   479→   479→   479→      return
+   480→   480→   480→    }
+   481→   481→   481→    if (pos && panState.current?.active) movePan(pos.x, pos.y)
+   482→   482→   482→  }
+   483→   483→   483→
+   484→   484→   484→  function onStageTouchEnd() {
+   485→   485→   485→    if (longPress.current?.timer) {
+   486→   486→   486→      clearTimeout(longPress.current.timer)
+   487→   487→   487→      longPress.current = null
+   488→   488→   488→    }
+   489→   489→   489→    touchGesture.current = null
+   490→   490→   490→    endPan()
+   491→   491→   491→  }
+   492→   492→   492→
+   493→   493→   493→  function onWheel(e: Konva.KonvaEventObject<WheelEvent>) {
+   494→   494→   494→    const layer = contentLayerRef.current
+   495→   495→   495→    const stage = stageRef.current
+   496→   496→   496→    if (!layer || !stage) return
+   497→   497→   497→    e.evt.preventDefault()
+   498→   498→   498→    const pos = stage.getPointerPosition()
+   499→   499→   499→    if (!pos) return
+   500→   500→   500→    if (e.evt.ctrlKey || e.evt.metaKey) {
+   501→   501→   501→      const oldScale = layer.scaleX()
+   502→   502→   502→      const newScale = clamp(oldScale * Math.exp(-e.evt.deltaY * 0.0016), MIN_ZOOM, MAX_ZOOM)
+   503→   503→   503→      const docX = (pos.x - layer.x()) / oldScale
+   504→   504→   504→      const docY = (pos.y - layer.y()) / oldScale
+   505→   505→   505→      layer.scale({ x: newScale, y: newScale })
+   506→   506→   506→      layer.position({ x: pos.x - docX * newScale, y: pos.y - docY * newScale })
+   507→   507→   507→      layer.batchDraw()
+   508→   508→   508→      commitGesture()
+   509→   509→   509→    } else {
+   510→   510→   510→      layer.position({ x: layer.x() - e.evt.deltaX, y: layer.y() - e.evt.deltaY })
+   511→   511→   511→      layer.batchDraw()
+   512→   512→   512→      commitGesture()
+   513→   513→   513→    }
+   514→   514→   514→  }
+   515→   515→   515→
+   516→   516→   516→  function onStageContextMenu(e: Konva.KonvaEventObject<PointerEvent>) {
+   517→   517→   517→    e.evt.preventDefault()
+   518→   518→   518→    const stage = stageRef.current
+   519→   519→   519→    if (!stage) return
+   520→   520→   520→    const targetId = e.target === stage ? null : String((e.target as Konva.Node).getAttr("elementId") ?? "")
+   521→   521→   521→    if (targetId) {
+   522→   522→   522→      const el = elements.find((x) => x.id === targetId)
+   523→   523→   523→      if (el && !selectedIds.includes(el.id)) handleSelect(el, false)
+   524→   524→   524→    } else {
+   525→   525→   525→      api.selectIds([])
+   526→   526→   526→    }
+   527→   527→   527→    onContextMenu(e.evt.clientX, e.evt.clientY, targetId)
+   528→   528→   528→  }
+   529→   529→   529→
+   530→   530→   530→  /* ------------------------- inline text editing ------------------------- */
+   531→   531→   531→  useEffect(() => {
+   532→   532→   532→    if (!editingId) {
+   533→   533→   533→      const t = setTimeout(() => setEditingRect(null), 0)
+   534→   534→   534→      return () => clearTimeout(t)
+   535→   535→   535→    }
+   536→   536→   536→    const layer = contentLayerRef.current
+   537→   537→   537→    const stage = stageRef.current
+   538→   538→   538→    if (!layer || !stage) return
+   539→   539→   539→    const node = layer.findOne(`#${editingId}`)
+   540→   540→   540→    if (!node) {
+   541→   541→   541→      const t = setTimeout(() => setEditingRect(null), 0)
+   542→   542→   542→      return () => clearTimeout(t)
+   543→   543→   543→    }
+   544→   544→   544→    const rect = node.getClientRect({ relativeTo: stage })
+   545→   545→   545→    const r = requestAnimationFrame(() => {
+   546→   546→   546→      setEditingRect({ left: rect.x, top: rect.y, width: Math.max(40, rect.width), height: Math.max(28, rect.height) })
+   547→   547→   547→    })
+   548→   548→   548→    return () => cancelAnimationFrame(r)
+   549→   549→   549→  }, [editingId, api.view.zoom, api.view.panX, api.view.panY])
+   550→   550→   550→
+   551→   551→   551→  const editingElement = useMemo(() => elements.find((el) => el.id === editingId), [elements, editingId])
+   552→   552→   552→
+   553→   553→   553→  function commitEditing(value: string) {
+   554→   554→   554→    if (!editingElement) return
+   555→   555→   555→    const id = editingElement.id
+   556→   556→   556→    if (editingElement.type === "text" || editingElement.type === "sticky") {
+   557→   557→   557→      const t = editingElement as TextElement
+   558→   558→   558→      const measured = measureTextBlockHeight(
+   559→   559→   559→        {
+   560→   560→   560→          text: value,
+   561→   561→   561→          fontFamily: t.fontFamily,
+   562→   562→   562→          fontSize: t.fontSize,
+   563→   563→   563→          fontWeight: t.fontWeight,
+   564→   564→   564→          italic: t.italic,
+   565→   565→   565→          uppercase: t.uppercase,
+   566→   566→   566→          lineHeight: t.lineHeight,
+   567→   567→   567→          letterSpacing: t.letterSpacing,
+   568→   568→   568→          listStyle: t.listStyle,
+   569→   569→   569→        },
+   570→   570→   570→        t.width,
+   571→   571→   571→      )
+   572→   572→   572→      api.updateElements([{ id, patch: { text: value, height: Math.max(t.height, measured) } as Partial<DesignElement> }])
+   573→   573→   573→    }
+   574→   574→   574→    api.selectIds([id])
+   575→   575→   575→  }
+   576→   576→   576→
+   577→   577→   577→  /* ------------------------- node props ------------------------- */
+   578→   578→   578→
+   579→   579→   579→  const nodeHandlers = (el: DesignElement) => ({
+   580→   580→   580→    id: el.id,
+   581→   581→   581→    elementId: el.id,
+   582→   582→   582→    visible: editingId !== el.id,
+   583→   583→   583→    onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
+   584→   584→   584→      e.cancelBubble = true
+   585→   585→   585→      handleSelect(el, e.evt.shiftKey)
+   586→   586→   586→    },
+   587→   587→   587→    onTap: (e: Konva.KonvaEventObject<TouchEvent>) => {
+   588→   588→   588→      e.cancelBubble = true
+   589→   589→   589→      handleSelect(el, false)
+   590→   590→   590→    },
+   591→   591→   591→    onDblClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
+   592→   592→   592→      e.cancelBubble = true
+   593→   593→   593→      if (canEdit && (el.type === "text" || el.type === "sticky")) api.startInlineEdit(el.id)
+   594→   594→   594→    },
+   595→   595→   595→    onDblTap: (e: Konva.KonvaEventObject<TouchEvent>) => {
+   596→   596→   596→      e.cancelBubble = true
+   597→   597→   597→      if (canEdit && (el.type === "text" || el.type === "sticky")) api.startInlineEdit(el.id)
+   598→   598→   598→    },
+   599→   599→   599→    onDragStart: (e: Konva.KonvaEventObject<DragEvent>) => onDragStart(e, el),
+   600→   600→   600→    onDragMove: (e: Konva.KonvaEventObject<DragEvent>) => onDragMove(e, el),
+   601→   601→   601→    onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => onDragEnd(e, el),
+   602→   602→   602→    onTransformEnd: (e: Konva.KonvaEventObject<Event>) => onTransformEnd(e, el),
+   603→   603→   603→  })
+   604→   604→   604→
+   605→   605→   605→  const baseTransform = (el: DesignElement) => ({
+   606→   606→   606→    x: el.x,
+   607→   607→   607→    y: el.y,
+   608→   608→   608→    rotation: el.rotation,
+   609→   609→   609→    opacity: el.opacity,
+   610→   610→   610→    draggable: canEdit && !el.locked && !editingId,
+   611→   611→   611→    listening: !el.locked,
+   612→   612→   612→  })
+   613→   613→   613→
+   614→   614→   614→  /* ------------------------- renderers ------------------------- */
+   615→   615→   615→
+   616→   616→   616→  function renderShape(el: ShapeElement) {
+   617→   617→   617→    if (el.variant === "line" || el.variant === "arrow") {
+   618→   618→   618→      const { x1, y1, x2, y2 } = lineGeometry(el.width, el.height)
+   619→   619→   619→      const color = el.fill === "transparent" ? el.stroke : el.fill
+   620→   620→   620→      if (el.variant === "arrow") {
+   621→   621→   621→        return (
+   622→   622→   622→          <KArrow
+   623→   623→   623→            {...baseTransform(el)}
+   624→   624→   624→            {...nodeHandlers(el)}
+   625→   625→   625→            points={[x1, y1, x2, y2]}
+   626→   626→   626→            stroke={color}
+   627→   627→   627→            strokeWidth={Math.max(1, el.strokeWidth || 3)}
+   628→   628→   628→            fill={color}
+   629→   629→   629→            pointerLength={Math.max(8, (el.strokeWidth || 3) * 3.2)}
+   630→   630→   630→            pointerWidth={Math.max(8, (el.strokeWidth || 3) * 3.2)}
+   631→   631→   631→            lineCap="round"
+   632→   632→   632→            dash={el.dash ?? undefined}
+   633→   633→   633→            hitStrokeWidth={Math.max(12, el.strokeWidth * 2)}
+   634→   634→   634→          />
+   635→   635→   635→        )
+   636→   636→   636→      }
+   637→   637→   637→      return (
+   638→   638→   638→        <KLine
+   639→   639→   639→          {...baseTransform(el)}
+   640→   640→   640→          {...nodeHandlers(el)}
+   641→   641→   641→          points={[x1, y1, x2, y2]}
+   642→   642→   642→          stroke={color}
+   643→   643→   643→          strokeWidth={Math.max(1, el.strokeWidth || 3)}
+   644→   644→   644→          lineCap="round"
+   645→   645→   645→          dash={el.dash ?? undefined}
+   646→   646→   646→          hitStrokeWidth={Math.max(12, el.strokeWidth * 2)}
+   647→   647→   647→        />
+   648→   648→   648→      )
+   649→   649→   649→    }
+   650→   650→   650→    return (
+   651→   651→   651→      <KPath
+   652→   652→   652→        {...baseTransform(el)}
+   653→   653→   653→        {...nodeHandlers(el)}
+   654→   654→   654→        data={shapePathData(el.variant, el.width, el.height, el.cornerRadius)}
+   655→   655→   655→        fill={el.fill === "transparent" ? undefined : el.fill}
+   656→   656→   656→        stroke={el.stroke === "transparent" || el.strokeWidth === 0 ? undefined : el.stroke}
+   657→   657→   657→        strokeWidth={el.strokeWidth}
+   658→   658→   658→        dash={el.dash ?? undefined}
+   659→   659→   659→        shadowColor={el.shadow?.color}
+   660→   660→   660→        shadowBlur={el.shadow?.blur ?? 0}
+   661→   661→   661→        shadowOffset={el.shadow ? { x: el.shadow.offsetX, y: el.shadow.offsetY } : undefined}
+   662→   662→   662→      />
+   663→   663→   663→    )
+   664→   664→   664→  }
+   665→   665→   665→
+   666→   666→   666→  function renderElement(el: DesignElement) {
+   667→   667→   667→    if (el.hidden) return null
+   668→   668→   668→    switch (el.type) {
+   669→   669→   669→      case "text": {
+   670→   670→   670→        const t = el as TextElement
+   671→   671→   671→        return (
+   672→   672→   672→          <KText
+   673→   673→   673→            {...baseTransform(el)}
+   674→   674→   674→            {...nodeHandlers(el)}
+   675→   675→   675→            text={t.uppercase ? t.text.toUpperCase() : t.text}
+   676→   676→   676→            width={t.width}
+   677→   677→   677→            height={t.height}
+   678→   678→   678→            fontSize={t.fontSize}
+   679→   679→   679→            fontFamily={t.fontFamily}
+   680→   680→   680→            fontStyle={`${t.italic ? "italic " : ""}${t.fontWeight >= 600 ? "bold" : "normal"}`}
+   681→   681→   681→            textDecoration={`${t.underline ? "underline " : ""}${t.strike ? "line-through" : ""}`.trim() || "normal"}
+   682→   682→   682→            align={t.align}
+   683→   683→   683→            verticalAlign={t.vAlign ?? "top"}
+   684→   684→   684→            lineHeight={t.lineHeight}
+   685→   685→   685→            letterSpacing={t.letterSpacing}
+   686→   686→   686→            fill={t.color}
+   687→   687→   687→            shadowColor={t.shadow?.color}
+   688→   688→   688→            shadowBlur={t.shadow?.blur ?? 0}
+   689→   689→   689→            shadowOffset={t.shadow ? { x: t.shadow.offsetX, y: t.shadow.offsetY } : undefined}
+   690→   690→   690→            stroke={t.stroke && t.stroke.width > 0 ? t.stroke.color : undefined}
+   691→   691→   691→            strokeWidth={t.stroke ? t.stroke.width : 0}
+   692→   692→   692→            fillAfterStrokeEnabled
+   693→   693→   693→            padding={2}
+   694→   694→   694→          />
+   695→   695→   695→        )
+   696→   696→   696→      }
+   697→   697→   697→      case "shape":
+   698→   698→   698→        return renderShape(el as ShapeElement)
+   699→   699→   699→      case "image": {
+   700→   700→   700→        const proc = images[el.id]
+   701→   701→   701→        if (!proc) return null
+   702→   702→   702→        const img = el as Extract<DesignElement, { type: "image" }>
+   703→   703→   703→        const crop = img.crop
+   704→   704→   704→        return (
+   705→   705→   705→          <KImage
+   706→   706→   706→            {...baseTransform(el)}
+   707→   707→   707→            {...nodeHandlers(el)}
+   708→   708→   708→            image={proc.source}
+   709→   709→   709→            width={img.width}
+   710→   710→   710→            height={img.height}
+   711→   711→   711→            cornerRadius={img.cornerRadius}
+   712→   712→   712→            crop={crop ? { x: crop.x * proc.natW, y: crop.y * proc.natH, width: crop.width * proc.natW, height: crop.height * proc.natH } : undefined}
+   713→   713→   713→            scaleX={img.flipH ? -1 : 1}
+   714→   714→   714→            scaleY={img.flipV ? -1 : 1}
+   715→   715→   715→          />
+   716→   716→   716→        )
+   717→   717→   717→      }
+   718→   718→   718→      case "icon": {
+   719→   719→   719→        const icon = el as Extract<DesignElement, { type: "icon" }>
+   720→   720→   720→        const paths = iconPaths(icon.icon)
+   721→   721→   721→        if (!paths) return null
+   722→   722→   722→        const s = Math.min(icon.width, icon.height) / 24
+   723→   723→   723→        return (
+   724→   724→   724→          <Group {...baseTransform(el)} {...nodeHandlers(el)}>
+   725→   725→   725→            <Group scaleX={s} scaleY={s}>
+   726→   726→   726→              {paths.map((d, i) => (
+   727→   727→   727→                <KPath key={i} data={d} stroke={icon.color} strokeWidth={2} lineCap="round" lineJoin="round" listening={false} />
+   728→   728→   728→              ))}
+   729→   729→   729→            </Group>
+   730→   730→   730→          </Group>
+   731→   731→   731→        )
+   732→   732→   732→      }
+   733→   733→   733→      case "chart":
+   734→   734→   734→        return <ChartNode el={el as Extract<DesignElement, { type: "chart" }>} base={baseTransform(el)} handlers={nodeHandlers(el)} />
+   735→   735→   735→      case "qr": {
+   736→   736→   736→        const img = qrImages[el.id]
+   737→   737→   737→        return img ? <KImage {...baseTransform(el)} {...nodeHandlers(el)} image={img} width={el.width} height={el.height} /> : null
+   738→   738→   738→      }
+
+[showing lines 39-738 of 1079; use offset=739 with limit to continue reading]

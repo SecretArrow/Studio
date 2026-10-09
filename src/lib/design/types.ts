@@ -25,6 +25,7 @@ export type DocType =
   | "whiteboard"
   | "website"
   | "email"
+  | "chart"
 
 export type ElementVisibility = "visible" | "hidden" | "locked"
 

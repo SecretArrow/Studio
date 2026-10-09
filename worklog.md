@@ -25,3 +25,16 @@ Stage Summary:
 - App boots: dashboard + auth + canvas editor + autosave + export functional end-to-end.
 - Demo accounts: admin@studio.local/admin1234, demo@studio.local/demo1234.
 - Next: Wave 1 — (1-a) assets/uploads/files/comments/notifications/bulk-jobs/account/ai/admin-users APIs, (1-b) full canvas editor, (1-c) template library 40+ + asset library UI + seeds.
+
+---
+Task ID: 1-a,1-b,1-c (integrated by main)
+Agent: wave-1 subagents + main
+Task: API expansion, full canvas editor, template library
+
+Work Log:
+- 1-a: 16 API route files (assets/files/comments/notifications/bulk-jobs/account/ai/admin) — all curl-tested, report in agent-ctx/logs/1-a.md. Fixed getProjectAccess comment-rank bug in src/lib/projects.ts.
+- 1-b: canvas editor rebuilt (src/components/studio/editors/canvas/* + src/lib/editor/*) — hit tool deadline; main agent integrated & fixed TS/lint (React Compiler rules: no setState-in-effect, no ref access during render — both agents must respect).
+- 1-c: template-builder.ts (44 original templates) + seed.ts (10 public CC0 svg assets), templates/detail/fonts views upgraded; seed verified (44 templates).
+
+Stage Summary:
+- Commit 780505d pushed to main. All editors except canvas are stubs. Next: Wave 2 (photo, presentation+doc, whiteboard+chart).

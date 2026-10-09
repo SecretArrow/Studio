@@ -66,6 +66,7 @@ export const DOC_PRESETS: DocPreset[] = [
   { id: "video-1-1", label: "Video Square 1:1", category: "video", type: "video", width: 1080, height: 1080, icon: "Square" },
   // Photo
   { id: "photo-edit", label: "Photo Editor", category: "photo", type: "photo", width: 1080, height: 1080, icon: "Camera", description: "Retouch, crop, filters" },
+  { id: "chart", label: "Chart / Data Graphic", category: "marketing", type: "chart", width: 1080, height: 1080, icon: "BarChart3", description: "Editable data-driven chart" },
   { id: "photo-collage", label: "Photo Collage", category: "photo", type: "canvas", width: 1080, height: 1350, icon: "LayoutGrid" },
   // Docs
   { id: "blank-doc", label: "Blank Document", category: "doc", type: "doc", width: 794, height: 1123, icon: "FileText", description: "A4 report / article" },

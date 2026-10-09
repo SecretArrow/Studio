@@ -21,6 +21,7 @@ const DocEditor = lazy(() => import("./doc-editor")) as unknown as EditorCompone
 const WhiteboardEditor = lazy(() => import("./whiteboard-editor")) as unknown as EditorComponent
 const WebsiteEditor = lazy(() => import("./website-editor")) as unknown as EditorComponent
 const EmailEditor = lazy(() => import("./email-editor")) as unknown as EditorComponent
+const ChartEditor = lazy(() => import("./chart-editor")) as unknown as EditorComponent
 
 export function getEditor(kind: string): EditorComponent {
   const loaders: Record<string, EditorComponent> = {
@@ -32,6 +33,7 @@ export function getEditor(kind: string): EditorComponent {
     whiteboard: WhiteboardEditor,
     website: WebsiteEditor,
     email: EmailEditor,
+    chart: ChartEditor,
   }
   return loaders[kind] ?? CanvasEditor
 }
