@@ -31,14 +31,18 @@ export async function getProjectAccess(projectId: string, user: SessionUser | nu
   const project = await db.project.findUnique({ where: { id: projectId } })
   if (!project || project.deletedAt) throw new ApiError(404, "Project not found")
 
+  // Rank of the granted roles vs. the minimum role the requested access level needs.
+  // (need "comment" maps to the "commenter" role, "edit" to "editor".)
+  const rank: Record<string, number> = { viewer: 1, commenter: 2, editor: 3 }
+  const required = need === "read" ? "viewer" : need === "comment" ? "commenter" : "editor"
+
   if (user && project.ownerId === user.id) return { project, role: "owner" }
 
   // share link token path
   if (shareToken) {
     const link = await db.shareLink.findUnique({ where: { token: shareToken } })
     if (link && !link.revoked && link.projectId === projectId && (!link.expiresAt || link.expiresAt > new Date())) {
-      const rank: Record<string, number> = { viewer: 1, commenter: 2, editor: 3 }
-      if (rank[link.role] >= rank[need === "read" ? "viewer" : need]) return { project, role: link.role as ShareRole }
+      if (rank[link.role] >= rank[required]) return { project, role: link.role as ShareRole }
     }
   }
 
@@ -49,8 +53,7 @@ export async function getProjectAccess(projectId: string, user: SessionUser | nu
     })
     if (member) {
       const role = member.role === "owner" ? "editor" : member.role === "admin" ? "editor" : "viewer"
-      const rank: Record<string, number> = { viewer: 1, commenter: 2, editor: 3 }
-      if (rank[role] >= rank[need === "read" ? "viewer" : need]) return { project, role: role as ShareRole }
+      if (rank[role] >= rank[required]) return { project, role: role as ShareRole }
     }
   }
 
@@ -58,8 +61,7 @@ export async function getProjectAccess(projectId: string, user: SessionUser | nu
   const modeRank: Record<string, string> = { "link-view": "viewer", "link-comment": "commenter", "link-edit": "editor" }
   const modeRole = modeRank[project.shareMode]
   if (modeRole) {
-    const rank: Record<string, number> = { viewer: 1, commenter: 2, editor: 3 }
-    if (rank[modeRole] >= rank[need === "read" ? "viewer" : need]) return { project, role: modeRole as ShareRole }
+    if (rank[modeRole] >= rank[required]) return { project, role: modeRole as ShareRole }
   }
 
   throw new ApiError(403, "You do not have access to this project", "forbidden")

@@ -19,6 +19,7 @@ import { ProjectCard } from "./project-card"
 import { ProjectsView } from "./views/projects-view"
 import { TrashView } from "./views/trash-view"
 import { TemplatesView } from "./views/templates-view"
+import { TemplateDetail } from "./views/template-detail"
 import { BrandView } from "./views/brand-view"
 import { BulkView } from "./views/bulk-view"
 import { SettingsView } from "./views/settings-view"
@@ -166,6 +167,7 @@ export function Dashboard() {
           {view.name === "projects" && <ProjectsView folderId={view.folderId} search={search} />}
           {view.name === "trash" && <TrashView />}
           {view.name === "templates" && <TemplatesView search={search} />}
+          {view.name === "templates-detail" && <TemplateDetail templateId={view.templateId} />}
           {view.name === "brand" && <BrandView />}
           {view.name === "bulk" && <BulkView />}
           {view.name === "settings" && <SettingsView />}

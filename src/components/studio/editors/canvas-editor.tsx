@@ -1,574 +1,890 @@
 "use client"
 
 /**
- * Canvas Editor — foundational implementation.
- * Wave-1 module extends this file in place (snapping, layers panel, context
- * menu, alignment, icons, QR, tables, charts, frames) without changing the
- * exported contract (EditorProps + forwardRef<EditorHandle>).
+ * Canvas Editor — full visual editor for DesignDoc documents.
+ *
+ * Owns: document state + history (undo/redo), selection, pages, view
+ * (pan/zoom/grid/rulers), left rail panels, properties panel, context menu
+ * and the EditorHandle contract (export / getThumbnail / isDirty).
+ * Rendering and interactions live in ./canvas/stage-view.tsx; pure logic in
+ * src/lib/editor/*.
  */
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
-import Konva from "konva"
-import { Stage, Layer, Image as KonvaImage, Text as KonvaText, Rect, Ellipse, Transformer } from "react-konva"
-import { jsPDF } from "jspdf"
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react"
 import type { EditorHandle, EditorProps, ExportResult } from "./types"
-import type { DesignDoc, DesignElement, TextElement, ShapeElement, ImageElement, PageModel } from "@/lib/design/types"
-import { createText, createShape, uid } from "@/lib/design/types"
+import type { BackgroundSpec, DesignDoc, DesignElement, PageModel, TextElement } from "@/lib/design/types"
+import { createPage, uid } from "@/lib/design/types"
+import { HistoryStore } from "@/lib/editor/history"
+import { exportDoc, getThumbnail as renderThumbnail, renderPageThumbnail } from "@/lib/editor/export"
+import { measureTextBlockHeight } from "@/lib/editor/geometry"
+import { StageView } from "./canvas/stage-view"
+import { ElementsPanel } from "./canvas/elements-panel"
+import { TextPanel } from "./canvas/text-panel"
+import { PhotosPanel } from "./canvas/photos-panel"
+import { LayersPanel } from "./canvas/layers-panel"
+import { BackgroundPanel } from "./canvas/background-panel"
+import { PagesPanel } from "./canvas/pages-panel"
+import { PropertiesPanel } from "./canvas/properties-panel"
+import { CanvasContextMenu } from "./canvas/context-menu"
+import { DEFAULT_VIEW, IconBtn, type CanvasApi, type ElementPatch, type ViewState } from "./canvas/ui"
 import { Button } from "@/components/ui/button"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { useToast } from "@/hooks/use-toast"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
+import { cn } from "@/lib/utils"
 import {
-  MousePointer2, Type, Square, Circle, ImagePlus, Trash2, Undo2, Redo2, Copy, Palette,
+  Image as ImageIcon,
+  Layers,
+  LayoutGrid,
+  Maximize,
+  Minus,
+  Palette,
+  Plus,
+  Redo2,
+  Ruler as RulerIcon,
+  Shapes,
+  Settings2,
+  Type,
+  Undo2,
+  X,
+  Files,
+  Magnet,
+  Grid2x2,
+  SquareDashed,
+  SlidersHorizontal,
 } from "lucide-react"
 
-interface KonvaImageState {
-  el: ImageElement
-  img: HTMLImageElement
+type TabId = "elements" | "text" | "photos" | "layers" | "background"
+
+const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
+  { id: "elements", label: "Elements", icon: <Shapes className="h-5 w-5" /> },
+  { id: "text", label: "Text", icon: <Type className="h-5 w-5" /> },
+  { id: "photos", label: "Photos", icon: <ImageIcon className="h-5 w-5" /> },
+  { id: "layers", label: "Layers", icon: <Layers className="h-5 w-5" /> },
+  { id: "background", label: "Background", icon: <Palette className="h-5 w-5" /> },
+]
+
+const MIN_ZOOM = 0.04
+const MAX_ZOOM = 8
+
+function clampZoom(z: number): number {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z))
 }
 
-const useLoadedImages = (elements: DesignElement[], page: PageModel | undefined) => {
-  const [images, setImages] = useState<Record<string, HTMLImageElement>>({})
-  useEffect(() => {
-    if (!page) return
-    let alive = true
-    const next: Record<string, HTMLImageElement> = {}
-    let pending = 0
-    for (const el of page.elements) {
-      if (el.type === "image" && el.src && !images[el.id]) {
-        pending += 1
-        const img = new window.Image()
-        img.crossOrigin = "anonymous"
-        img.onload = () => {
-          if (!alive) return
-          setImages((prev) => ({ ...prev, [el.id]: img }))
-        }
-        img.src = el.src
-      } else if (images[el.id]) {
-        next[el.id] = images[el.id]
-      }
-    }
-    if (pending === 0) {
-      const t = setTimeout(() => setImages(next), 0)
-      return () => {
-        clearTimeout(t)
-        alive = false
-      }
-    }
-    return () => {
-      alive = false
-    }
-  }, [page?.elements])
-  return images
+interface Clipboard {
+  elements: DesignElement[]
 }
 
 const CanvasEditor = forwardRef<EditorHandle, EditorProps>(function CanvasEditor(
   { project, initialDoc, role, onDocChange, registerHandle },
   _ref,
 ) {
-  const stageRef = useRef<Konva.Stage>(null)
-  const trRef = useRef<Konva.Transformer>(null)
-  const layerRef = useRef<Konva.Layer>(null)
-  const [doc, setDoc] = useState<DesignDoc>(initialDoc)
-  const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [zoom, setZoom] = useState(1)
-  const history = useRef<{ stack: string[]; index: number }>({ stack: [JSON.stringify(initialDoc)], index: 0 })
-  const docLocalRef = useRef<DesignDoc | null>(null)
-  if (docLocalRef.current === null) docLocalRef.current = initialDoc
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const { toast } = useToast()
   const canEdit = role === "owner" || role === "editor"
+  const [doc, setDoc] = useState<DesignDoc>(initialDoc)
+  const [pageIndex, setPageIndexState] = useState(0)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [view, setViewState] = useState<ViewState>({ ...DEFAULT_VIEW })
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
+  const [activeTab, setActiveTab] = useState<TabId | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; elementId: string | null } | null>(null)
+  const [viewport, setViewport] = useState({ w: 0, h: 0 })
+  const [propsSheetOpen, setPropsSheetOpen] = useState(false)
 
-  const pageIndex = 0
-  const page = doc.pages[pageIndex]
-  const images = useLoadedImages(page?.elements ?? [], page)
+  const docRef = useRef<DesignDoc>(initialDoc)
+  const pageIndexRef = useRef(0)
+  const viewRef = useRef(view)
+  useEffect(() => {
+    viewRef.current = view
+  }, [view])
+  const [history] = useState(() => new HistoryStore(initialDoc, 60))
+  const clipboard = useRef<Clipboard | null>(null)
+  const dirtyRef = useRef(false)
+  const firstFitDone = useRef(false)
 
-  const pushHistory = useCallback((next: DesignDoc) => {
-    const h = history.current
-    h.stack = h.stack.slice(0, h.index + 1)
-    h.stack.push(JSON.stringify(next))
-    if (h.stack.length > 60) h.stack.shift()
-    h.index = h.stack.length - 1
-  }, [])
+  const page: PageModel = doc.pages[Math.min(pageIndex, doc.pages.length - 1)] ?? doc.pages[0]
+  const selection = useMemo(() => page.elements.filter((e) => selectedIds.includes(e.id)), [page, selectedIds])
+
+  const syncHistoryState = useCallback(() => {
+    setHistoryState({ canUndo: history.canUndo, canRedo: history.canRedo })
+  }, [history])
+
+  /* ------------------------- core mutations ------------------------- */
 
   const commit = useCallback(
-    (next: DesignDoc) => {
+    (next: DesignDoc, coalesceKey?: string) => {
+      docRef.current = next
+      dirtyRef.current = true
       setDoc(next)
-      docLocalRef.current = next
-      pushHistory(next)
+      history.push(next, coalesceKey)
+      syncHistoryState()
       onDocChange(next)
     },
-    [onDocChange, pushHistory],
+    [history, onDocChange, syncHistoryState],
   )
 
-  useEffect(() => {
-    registerHandle({
-      export: async (req) => {
-        const results: ExportResult[] = []
-        const base = req.filenameBase || "design"
-        if (req.format === "json") {
-          results.push({
-            filename: `${base}.studio.json`,
-            blob: new Blob([JSON.stringify(docLocalRef.current ?? initialDoc, null, 2)], { type: "application/json" }),
-          })
-          return results
-        }
-        if (req.format === "svg") {
-          const stage = stageRef.current
-          if (!stage) return results
-          // Konva -> SVG for vector elements
-          const svg = stage.toDataURL().replace(/^data:image\/png.*/, "")
-          // honest note: full SVG export of raster canvas is approximated; use PNG for pixel-exact
-          results.push({
-            filename: `${base}.png`,
-            blob: await stageToBlob(stage, 1, false),
-            note: "SVG export renders the flattened canvas — use the project file to keep elements editable.",
-          })
-          void svg
-          return results
-        }
-        const stage = stageRef.current
-        if (!stage) return results
-        const scale = req.scale ?? 1
-        const transparent = req.transparent ?? false
-        if (req.format === "pdf") {
-          const cur: DesignDoc = docLocalRef.current ?? initialDoc
-          const pdf = new jsPDF({ orientation: cur.width >= cur.height ? "landscape" : "portrait", unit: "px", format: [cur.width, cur.height] })
-          const dataUrl = stage.toDataURL({ pixelRatio: Math.min(2, scale), mimeType: "image/png" })
-          pdf.addImage(dataUrl, "PNG", 0, 0, cur.width, cur.height)
-          results.push({ filename: `${base}.pdf`, blob: pdf.output("blob") })
-          return results
-        }
-        const mime = req.format === "jpeg" ? "image/jpeg" : req.format === "webp" ? "image/webp" : "image/png"
-        const dataUrl = stage.toDataURL({ pixelRatio: scale, mimeType: mime, quality: req.quality ?? 0.95 })
-        results.push({ filename: `${base}.${req.format === "jpeg" ? "jpg" : req.format}`, blob: dataUrlToBlob(dataUrl) })
-        void transparent
-        return results
+  const mutatePage = useCallback(
+    (fn: (page: PageModel) => PageModel, coalesceKey?: string) => {
+      const prev = docRef.current
+      const next: DesignDoc = {
+        ...prev,
+        pages: prev.pages.map((p, i) => (i === pageIndexRef.current ? fn(p) : p)),
+      }
+      commit(next, coalesceKey)
+    },
+    [commit],
+  )
+
+  const ensureTextHeight = (el: DesignElement): DesignElement => {
+    if (el.type !== "text") return el
+    const t = el as TextElement
+    const h = measureTextBlockHeight(
+      {
+        text: t.text,
+        fontFamily: t.fontFamily,
+        fontSize: t.fontSize,
+        fontWeight: t.fontWeight,
+        italic: t.italic,
+        uppercase: t.uppercase,
+        lineHeight: t.lineHeight,
+        letterSpacing: t.letterSpacing,
+        listStyle: t.listStyle,
       },
-      getThumbnail: async () => {
-        const stage = stageRef.current
-        if (!stage) return null
-        const targetWidth = 480
-        return stage.toDataURL({ pixelRatio: targetWidth / stage.width(), mimeType: "image/jpeg", quality: 0.5 })
-      },
+      t.width,
+    )
+    return { ...t, height: Math.max(t.height, Math.round(h)) }
+  }
+
+  const updateElements = useCallback(
+    (patches: ElementPatch[], opts?: { coalesceKey?: string }) => {
+      if (!canEdit || patches.length === 0) return
+      const map = new Map(patches.map((p) => [p.id, p.patch]))
+      mutatePage(
+        (p) => ({
+          ...p,
+          elements: p.elements.map((el) => {
+            const patch = map.get(el.id)
+            if (!patch) return el
+            const merged = { ...el, ...patch } as DesignElement
+            const textKeys = ["text", "fontSize", "fontFamily", "fontWeight", "italic", "uppercase", "lineHeight", "letterSpacing", "listStyle", "width"]
+            if (merged.type === "text" && textKeys.some((k) => k in patch)) return ensureTextHeight(merged)
+            return merged
+          }),
+        }),
+        opts?.coalesceKey,
+      )
+    },
+    [canEdit, mutatePage],
+  )
+
+  const dropPos = useCallback(
+    (w: number, h: number) => {
+      const v = viewRef.current
+      const vp = viewport.w > 0 ? viewport : { w: 900, h: 600 }
+      const cx = (vp.w / 2 - v.panX) / v.zoom
+      const cy = (vp.h / 2 - v.panY) / v.zoom
+      return {
+        x: Math.max(12, Math.round(cx - w / 2)),
+        y: Math.max(12, Math.round(cy - h / 2)),
+      }
+    },
+    [viewport],
+  )
+
+  const addElements = useCallback(
+    (els: DesignElement[], select = true) => {
+      if (!canEdit || els.length === 0) return
+      const prepared = els.map(ensureTextHeight)
+      mutatePage((p) => ({ ...p, elements: [...p.elements, ...prepared] }))
+      if (select) setSelectedIds(prepared.map((el) => el.id))
+    },
+    [canEdit, mutatePage],
+  )
+
+  const deleteElements = useCallback(
+    (ids: string[]) => {
+      if (!canEdit || ids.length === 0) return
+      const set = new Set(ids)
+      mutatePage((p) => ({ ...p, elements: p.elements.filter((e) => !set.has(e.id)) }))
+      setSelectedIds((prev) => prev.filter((id) => !set.has(id)))
+      setEditingId(null)
+    },
+    [canEdit, mutatePage],
+  )
+
+  const duplicateElements = useCallback(
+    (ids: string[]) => {
+      if (!canEdit || ids.length === 0) return
+      const set = new Set(ids)
+      const source = page.elements.filter((e) => set.has(e.id))
+      if (source.length === 0) return
+      const gidMap = new Map<string, string>()
+      const clones = source.map((el) => {
+        let groupId = el.groupId
+        if (groupId) {
+          if (!gidMap.has(groupId)) gidMap.set(groupId, uid("grp"))
+          groupId = gidMap.get(groupId)
+        }
+        return { ...el, id: uid("dup"), x: el.x + 24, y: el.y + 24, groupId } as DesignElement
+      })
+      mutatePage((p) => ({ ...p, elements: [...p.elements, ...clones] }))
+      setSelectedIds(clones.map((c) => c.id))
+    },
+    [canEdit, mutatePage, page.elements],
+  )
+
+  const selectIds = useCallback((ids: string[], additive = false) => {
+    setEditingId(null)
+    setSelectedIds((prev) => {
+      if (!additive) return ids
+      const set = new Set(prev)
+      for (const id of ids) {
+        if (set.has(id)) set.delete(id)
+        else set.add(id)
+      }
+      return Array.from(set)
     })
-    return () => registerHandle(null)
-  }, [registerHandle])
+  }, [])
 
-  /* ---------- element helpers ---------- */
+  const reorder = useCallback(
+    (ids: string[], dir: "front" | "forward" | "backward" | "back") => {
+      if (!canEdit || ids.length === 0) return
+      const set = new Set(ids)
+      mutatePage((p) => {
+        let elements = [...p.elements]
+        if (dir === "front") {
+          const picked = elements.filter((e) => set.has(e.id))
+          elements = [...elements.filter((e) => !set.has(e.id)), ...picked]
+        } else if (dir === "back") {
+          const picked = elements.filter((e) => set.has(e.id))
+          elements = [...picked, ...elements.filter((e) => !set.has(e.id))]
+        } else if (dir === "forward") {
+          for (let i = elements.length - 2; i >= 0; i -= 1) {
+            if (set.has(elements[i].id) && !set.has(elements[i + 1].id)) {
+              ;[elements[i], elements[i + 1]] = [elements[i + 1], elements[i]]
+            }
+          }
+        } else {
+          for (let i = 1; i < elements.length; i += 1) {
+            if (set.has(elements[i].id) && !set.has(elements[i - 1].id)) {
+              ;[elements[i], elements[i - 1]] = [elements[i - 1], elements[i]]
+            }
+          }
+        }
+        return { ...p, elements }
+      })
+    },
+    [canEdit, mutatePage],
+  )
 
-  function addElement(el: DesignElement) {
-    if (!page || !canEdit) return
-    const next: DesignDoc = {
-      ...doc,
-      pages: doc.pages.map((p, i) => (i === pageIndex ? { ...p, elements: [...p.elements, el] } : p)),
-    }
-    commit(next)
-    setSelectedIds([el.id])
-  }
+  const groupSelected = useCallback(() => {
+    if (!canEdit || selection.length < 2) return
+    const gid = uid("grp")
+    updateElements(selection.map((e) => ({ id: e.id, patch: { groupId: gid } })))
+  }, [canEdit, selection, updateElements])
 
-  function updateElement(id: string, patch: Partial<DesignElement>) {
-    if (!page) return
-    const next: DesignDoc = {
-      ...doc,
-      pages: doc.pages.map((p, i) =>
-        i === pageIndex ? { ...p, elements: p.elements.map((e) => (e.id === id ? ({ ...e, ...patch } as DesignElement) : e)) } : p,
-      ),
-    }
-    commit(next)
-  }
+  const ungroupSelected = useCallback(() => {
+    if (!canEdit || selection.length === 0) return
+    updateElements(selection.map((e) => ({ id: e.id, patch: { groupId: undefined } })))
+  }, [canEdit, selection, updateElements])
 
-  function deleteSelected() {
-    if (!page || selectedIds.length === 0 || !canEdit) return
-    const next: DesignDoc = {
-      ...doc,
-      pages: doc.pages.map((p, i) => (i === pageIndex ? { ...p, elements: p.elements.filter((e) => !selectedIds.includes(e.id)) } : p)),
-    }
-    commit(next)
+  const renameElement = useCallback(
+    (id: string, name: string) => {
+      updateElements([{ id, patch: { name: name.trim() || undefined } }])
+    },
+    [updateElements],
+  )
+
+  /* ------------------------- clipboard ------------------------- */
+
+  const copySelection = useCallback(
+    (cut = false) => {
+      if (selection.length === 0) return
+      clipboard.current = { elements: JSON.parse(JSON.stringify(selection)) as DesignElement[] }
+      if (cut) deleteElements(selectedIds)
+    },
+    [deleteElements, selection, selectedIds],
+  )
+
+  const pasteClipboard = useCallback(() => {
+    const clip = clipboard.current
+    if (!canEdit || !clip || clip.elements.length === 0) return
+    const gidMap = new Map<string, string>()
+    const clones = clip.elements.map((el) => {
+      let groupId = el.groupId
+      if (groupId) {
+        if (!gidMap.has(groupId)) gidMap.set(groupId, uid("grp"))
+        groupId = gidMap.get(groupId)
+      }
+      return { ...el, id: uid("paste"), x: el.x + 24, y: el.y + 24, groupId } as DesignElement
+    })
+    addElements(clones)
+  }, [addElements, canEdit])
+
+  /* ------------------------- pages ------------------------- */
+
+  const setPageIndex = useCallback((i: number) => {
+    const docCurrent = docRef.current
+    const clamped = Math.max(0, Math.min(i, docCurrent.pages.length - 1))
+    pageIndexRef.current = clamped
+    setPageIndexState(clamped)
     setSelectedIds([])
-  }
+    setEditingId(null)
+  }, [])
 
-  function duplicateSelected() {
-    if (!page || selectedIds.length === 0 || !canEdit) return
-    const clones = page.elements
-      .filter((e) => selectedIds.includes(e.id))
-      .map((e) => ({ ...e, id: uid("dup"), x: e.x + 24, y: e.y + 24 }) as DesignElement)
-    const next: DesignDoc = {
-      ...doc,
-      pages: doc.pages.map((p, i) => (i === pageIndex ? { ...p, elements: [...p.elements, ...clones] } : p)),
-    }
-    commit(next)
-    setSelectedIds(clones.map((c) => c.id))
-  }
+  const addPage = useCallback(
+    (duplicate: boolean) => {
+      if (!canEdit) return
+      const prev = docRef.current
+      const current = prev.pages[pageIndexRef.current]
+      let newPage: PageModel
+      if (duplicate) {
+        const gidMap = new Map<string, string>()
+        newPage = {
+          ...current,
+          id: uid("page"),
+          name: `${current.name} copy`,
+          elements: current.elements.map((el) => {
+            let groupId = el.groupId
+            if (groupId) {
+              if (!gidMap.has(groupId)) gidMap.set(groupId, uid("grp"))
+              groupId = gidMap.get(groupId)
+            }
+            return { ...el, id: uid("el"), groupId } as DesignElement
+          }),
+        }
+      } else {
+        newPage = createPage({ name: `Page ${prev.pages.length + 1}`, background: current.background })
+      }
+      const pages = [...prev.pages]
+      pages.splice(pageIndexRef.current + 1, 0, newPage)
+      commit({ ...prev, pages })
+      setPageIndex(pageIndexRef.current + 1)
+    },
+    [canEdit, commit, setPageIndex],
+  )
 
-  function undo() {
-    const h = history.current
-    if (h.index > 0) {
-      h.index -= 1
-      const restored = JSON.parse(h.stack[h.index]) as DesignDoc
-      setDoc(restored)
-      docLocalRef.current = restored
-      onDocChange(restored)
-    }
-  }
+  const deletePage = useCallback(
+    (index: number) => {
+      if (!canEdit) return
+      const prev = docRef.current
+      if (prev.pages.length <= 1) return
+      const pages = prev.pages.filter((_, i) => i !== index)
+      commit({ ...prev, pages })
+      setPageIndex(Math.max(0, Math.min(pageIndexRef.current > index ? pageIndexRef.current - 1 : pageIndexRef.current, pages.length - 1)))
+    },
+    [canEdit, commit, setPageIndex],
+  )
 
-  function redo() {
-    const h = history.current
-    if (h.index < h.stack.length - 1) {
-      h.index += 1
-      const restored = JSON.parse(h.stack[h.index]) as DesignDoc
-      setDoc(restored)
-      docLocalRef.current = restored
-      onDocChange(restored)
-    }
-  }
+  const movePage = useCallback(
+    (from: number, to: number) => {
+      if (!canEdit || from === to) return
+      const prev = docRef.current
+      const pages = [...prev.pages]
+      const [moved] = pages.splice(from, 1)
+      pages.splice(to, 0, moved)
+      commit({ ...prev, pages })
+      if (pageIndexRef.current === from) setPageIndex(to)
+      else setPageIndex(pageIndexRef.current)
+    },
+    [canEdit, commit, setPageIndex],
+  )
 
-  /* ---------- keyboard ---------- */
+  const renamePage = useCallback(
+    (index: number, name: string) => {
+      if (!canEdit) return
+      const prev = docRef.current
+      commit({
+        ...prev,
+        pages: prev.pages.map((p, i) => (i === index ? { ...p, name } : p)),
+      })
+    },
+    [canEdit, commit],
+  )
+
+  const setPageBackground = useCallback(
+    (bg: BackgroundSpec) => {
+      if (!canEdit) return
+      mutatePage((p) => ({ ...p, background: bg }))
+    },
+    [canEdit, mutatePage],
+  )
+
+  /* ------------------------- view ------------------------- */
+
+  const setView = useCallback((patch: Partial<ViewState>) => {
+    setViewState((prev) => ({ ...prev, ...patch }))
+  }, [])
+
+  const onViewportResize = useCallback((w: number, h: number) => {
+    setViewport((prev) => (prev.w === w && prev.h === h ? prev : { w, h }))
+  }, [])
+
+  const fitToScreen = useCallback(() => {
+    if (viewport.w <= 0 || viewport.h <= 0) return
+    const d = docRef.current
+    const pad = 56
+    const zoom = clampZoom(Math.min((viewport.w - pad) / d.width, (viewport.h - pad) / d.height))
+    setViewState((prev) => ({
+      ...prev,
+      zoom,
+      panX: (viewport.w - d.width * zoom) / 2,
+      panY: (viewport.h - d.height * zoom) / 2,
+    }))
+  }, [viewport])
+
   useEffect(() => {
+    if (!firstFitDone.current && viewport.w > 0) {
+      firstFitDone.current = true
+      fitToScreen()
+    }
+  }, [viewport, fitToScreen])
+
+  const setZoom = useCallback(
+    (z: number) => {
+      const target = clampZoom(z)
+      const v = viewRef.current
+      const vp = viewport.w > 0 ? viewport : { w: 900, h: 600 }
+      const cx = vp.w / 2
+      const cy = vp.h / 2
+      const docX = (cx - v.panX) / v.zoom
+      const docY = (cy - v.panY) / v.zoom
+      setViewState((prev) => ({ ...prev, zoom: target, panX: cx - docX * target, panY: cy - docY * target }))
+    },
+    [viewport],
+  )
+
+  const zoomBy = useCallback(
+    (factor: number) => {
+      setZoom(viewRef.current.zoom * factor)
+    },
+    [setZoom],
+  )
+
+  const renderThumb = useCallback((p: PageModel, width: number) => renderPageThumbnail(docRef.current, p, width), [])
+
+  /* ------------------------- undo / redo ------------------------- */
+
+  const undo = useCallback(() => {
+    const restored = history.undo() as DesignDoc | null
+    if (!restored) return
+    docRef.current = restored
+    dirtyRef.current = true
+    setDoc(restored)
+    onDocChange(restored)
+    syncHistoryState()
+    setSelectedIds((prev) => prev.filter((id) => restored.pages.some((p) => p.elements.some((e) => e.id === id))))
+  }, [history, onDocChange, syncHistoryState])
+
+  const redo = useCallback(() => {
+    const restored = history.redo() as DesignDoc | null
+    if (!restored) return
+    docRef.current = restored
+    dirtyRef.current = true
+    setDoc(restored)
+    onDocChange(restored)
+    syncHistoryState()
+    setSelectedIds((prev) => prev.filter((id) => restored.pages.some((p) => p.elements.some((e) => e.id === id))))
+  }, [history, onDocChange, syncHistoryState])
+
+  /* ------------------------- api object ------------------------- */
+
+  const api = useMemo<CanvasApi>(
+    () => ({
+      doc,
+      page,
+      pageIndex,
+      canEdit,
+      selectedIds,
+      selection,
+      addElements,
+      updateElements,
+      deleteElements,
+      duplicateElements,
+      selectIds,
+      reorder,
+      groupSelected,
+      ungroupSelected,
+      renameElement,
+      copySelection,
+      pasteClipboard,
+      setPageIndex,
+      addPage,
+      deletePage,
+      movePage,
+      renamePage,
+      setPageBackground,
+      view,
+      setView,
+      fitToScreen,
+      setZoom,
+      undo,
+      redo,
+      canUndo: historyState.canUndo,
+      canRedo: historyState.canRedo,
+      startInlineEdit: (id: string) => setEditingId(id),
+      renderThumb,
+      dropPos,
+    }),
+    [
+      doc, page, pageIndex, canEdit, selectedIds, selection, addElements, updateElements, deleteElements,
+      duplicateElements, selectIds, reorder, groupSelected, ungroupSelected, renameElement, copySelection,
+      pasteClipboard, setPageIndex, addPage, deletePage, movePage, renamePage, setPageBackground, view,
+      setView, fitToScreen, setZoom, undo, redo, historyState, renderThumb, dropPos,
+    ],
+  )
+
+  /* ------------------------- keyboard ------------------------- */
+
+  useEffect(() => {
+    function isTextEntry(t: EventTarget | null): boolean {
+      const el = t as HTMLElement | null
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)
+    }
     function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return
-      if (e.key === "Delete" || e.key === "Backspace") deleteSelected()
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) { e.preventDefault(); undo() }
-      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo() }
-      if ((e.ctrlKey || e.metaKey) && e.key === "d") { e.preventDefault(); duplicateSelected() }
-      if (e.key === "Escape") setSelectedIds([])
-      if (selectedIds.length === 1 && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+      if (isTextEntry(e.target)) return
+      const mod = e.ctrlKey || e.metaKey
+      const key = e.key
+      if (key === "Escape") {
+        if (contextMenu) setContextMenu(null)
+        else if (activeTab) setActiveTab(null)
+        else setSelectedIds([])
+        return
+      }
+      if (!canEdit) {
+        if (mod && key.toLowerCase() === "a") {
+          e.preventDefault()
+          setSelectedIds(page.elements.filter((el) => !el.locked).map((el) => el.id))
+        }
+        return
+      }
+      // clipboard & history & tools
+      if (mod && key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); undo(); return }
+      if (mod && (key.toLowerCase() === "y" || (key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); redo(); return }
+      if (mod && key.toLowerCase() === "c") { e.preventDefault(); copySelection(false); return }
+      if (mod && key.toLowerCase() === "x") { e.preventDefault(); copySelection(true); return }
+      if (mod && key.toLowerCase() === "v") { e.preventDefault(); pasteClipboard(); return }
+      if (mod && key.toLowerCase() === "d") { e.preventDefault(); duplicateElements(selectedIds); return }
+      if (mod && key.toLowerCase() === "a") { e.preventDefault(); selectIds(page.elements.map((el) => el.id)); return }
+      if (mod && key.toLowerCase() === "g" && !e.shiftKey) { e.preventDefault(); groupSelected(); return }
+      if (mod && key.toLowerCase() === "g" && e.shiftKey) { e.preventDefault(); ungroupSelected(); return }
+      if (mod && key === "]") { e.preventDefault(); reorder(selectedIds, "front"); return }
+      if (mod && key === "[") { e.preventDefault(); reorder(selectedIds, "back"); return }
+      if (key === "]") { reorder(selectedIds, "forward"); return }
+      if (key === "[") { reorder(selectedIds, "backward"); return }
+      if (key === "Delete" || key === "Backspace") { if (selectedIds.length > 0) { e.preventDefault(); deleteElements(selectedIds) } return }
+      // nudging
+      if (key.startsWith("Arrow") && selectedIds.length > 0) {
         e.preventDefault()
         const step = e.shiftKey ? 10 : 1
-        const el = page?.elements.find((x) => x.id === selectedIds[0])
-        if (el) {
-          const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0
-          const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0
-          updateElement(el.id, { x: el.x + dx, y: el.y + dy })
-        }
+        const dx = key === "ArrowLeft" ? -step : key === "ArrowRight" ? step : 0
+        const dy = key === "ArrowUp" ? -step : key === "ArrowDown" ? step : 0
+        updateElements(
+          selection.map((el) => ({ id: el.id, patch: { x: el.x + dx, y: el.y + dy } })),
+          { coalesceKey: "nudge" },
+        )
+        return
       }
+      // zoom
+      if (key === "+" || key === "=") { zoomBy(1.15); return }
+      if (key === "-" || key === "_") { zoomBy(1 / 1.15); return }
+      if (key === "0") { fitToScreen(); return }
+      if (key === "1") { setZoom(1); return }
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [selectedIds, page])
+  }, [
+    activeTab, canEdit, contextMenu, deleteElements, duplicateElements, fitToScreen, groupSelected,
+    page.elements, pasteClipboard, redo, reorder, copySelection, selection, selectIds, selectedIds,
+    setZoom, undo, ungroupSelected, updateElements, zoomBy,
+  ])
 
-  /* ---------- stage interactions ---------- */
-
-  function handleStageClick(e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
-    if (e.target === e.target.getStage()) {
-      setSelectedIds([])
-      trRef.current?.nodes([])
-    }
-  }
-
-  function attachNode(node: Konva.Node | null, id: string) {
-    const tr = trRef.current
-    if (!tr) return
-    if (node && selectedIds.includes(id)) {
-      tr.nodes([...tr.nodes().filter((n) => n.getAttr("id") !== id), node])
-      tr.getLayer()?.batchDraw()
-    }
-  }
+  /* ------------------------- editor handle ------------------------- */
 
   useEffect(() => {
-    const tr = trRef.current
-    const layer = layerRef.current
-    if (!tr || !layer) return
-    const nodes = layer.getChildren((n: Konva.Node) => n.getAttr("elementId") && selectedIds.includes(n.getAttr("elementId")))
-    tr.nodes(nodes)
-    tr.getLayer()?.batchDraw()
-  }, [selectedIds, page])
+    const handle: EditorHandle = {
+      export: async (req): Promise<ExportResult[]> => exportDoc(docRef.current, req),
+      getThumbnail: async () => {
+        const current = docRef.current
+        const p = current.pages[Math.min(pageIndexRef.current, current.pages.length - 1)]
+        return renderThumbnail(current, p)
+      },
+      isDirty: () => dirtyRef.current,
+    }
+    registerHandle(handle)
+    return () => registerHandle(null)
+  }, [registerHandle])
 
-  /* ---------- zoom & fit ---------- */
-  function fitToScreen() {
-    const container = stageRef.current?.container()?.parentElement
-    if (!container) return
-    const w = container.clientWidth - 48
-    const h = container.clientHeight - 48
-    setZoom(Math.min(w / doc.width, h / doc.height))
-  }
-
+  /* keep refs in sync */
   useEffect(() => {
-    const t = setTimeout(fitToScreen, 0)
-    return () => clearTimeout(t)
-  }, [doc.width, doc.height])
+    pageIndexRef.current = pageIndex
+  }, [pageIndex])
 
-  const scale = zoom
-  const bg = page?.background
+  const showPagesStrip = view.pagesOpen || doc.pages.length > 1
 
   return (
-    <div className="flex h-full flex-col md:flex-row">
-      {/* tool rail */}
-      <div className="flex shrink-0 flex-row items-center gap-1 border-b bg-card px-2 py-1.5 md:flex-col md:border-b-0 md:border-r md:py-3 md:pt-[max(0.75rem,env(safe-area-inset-top))]">
-        <ToolBtn label="Select" onClick={() => setSelectedIds([])}><MousePointer2 className="h-4 w-4" /></ToolBtn>
-        <ToolBtn
-          label="Text"
-          disabled={!canEdit}
-          onClick={() =>
-            addElement(createText({ x: 80, y: 80, text: "Double-click to edit", fontSize: Math.round(doc.width / 14) }))
-          }
-        >
-          <Type className="h-4 w-4" />
-        </ToolBtn>
-        <ToolBtn label="Rectangle" disabled={!canEdit} onClick={() => addElement(createShape({ x: 100, y: 100, variant: "rect" }))}>
-          <Square className="h-4 w-4" />
-        </ToolBtn>
-        <ToolBtn label="Ellipse" disabled={!canEdit} onClick={() => addElement(createShape({ x: 100, y: 100, variant: "ellipse" }))}>
-          <Circle className="h-4 w-4" />
-        </ToolBtn>
-        <ToolBtn label="Image" disabled={!canEdit} onClick={() => fileInputRef.current?.click()}>
-          <ImagePlus className="h-4 w-4" />
-        </ToolBtn>
-        <ToolBtn label="Duplicate" disabled={!canEdit || selectedIds.length === 0} onClick={duplicateSelected}>
-          <Copy className="h-4 w-4" />
-        </ToolBtn>
-        <ToolBtn label="Delete" disabled={!canEdit || selectedIds.length === 0} onClick={deleteSelected}>
-          <Trash2 className="h-4 w-4" />
-        </ToolBtn>
-        <div className="mx-1 h-5 w-px bg-border md:my-1 md:h-5 md:w-auto md:w-px" />
-        <ToolBtn label="Undo" onClick={undo}><Undo2 className="h-4 w-4" /></ToolBtn>
-        <ToolBtn label="Redo" onClick={redo}><Redo2 className="h-4 w-4" /></ToolBtn>
-        <ToolBtn label="Background color" onClick={() => {
-          const colors = ["#ffffff", "#f8f7f4", "#ede9fe", "#dbeafe", "#dcfce7", "#fee2e2", "#111827"]
-          const current = bg?.color ?? "#ffffff"
-          const nextColor = colors[(colors.indexOf(current) + 1) % colors.length]
-          const next: DesignDoc = {
-            ...doc,
-            pages: doc.pages.map((p, i) => (i === pageIndex ? { ...p, background: { type: "solid", color: nextColor } } : p)),
-          }
-          commit(next)
-        }}>
-          <Palette className="h-4 w-4" />
-        </ToolBtn>
-      </div>
-
-      {/* canvas */}
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-[repeating-conic-gradient(#e5e7eb_0%_25%,#f8fafc_0%_50%)] bg-[length:20px_20px]">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div
-            className="shadow-xl"
-            style={{
-              width: doc.width * scale,
-              height: doc.height * scale,
-              maxWidth: "100%",
-              maxHeight: "100%",
-            }}
-            ref={(node) => {
-              if (node && Math.abs((node.clientWidth || 0) / doc.width - scale) > 0.01 && node.clientWidth > 0) {
-                setZoom(node.clientWidth / doc.width)
-              }
-            }}
+    <div className="flex h-full w-full overflow-hidden bg-background">
+      {/* ---------------- left rail ---------------- */}
+      <nav
+        className="z-40 flex shrink-0 flex-row items-center gap-0.5 overflow-x-auto border-b bg-card px-1.5 py-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] md:flex-col md:overflow-visible md:border-b-0 md:border-r md:px-1.5 md:py-2"
+        aria-label="Editor tools"
+      >
+        {TABS.map((tab) => (
+          <IconBtn
+            key={tab.id}
+            label={tab.label}
+            active={activeTab === tab.id}
+            disabled={!canEdit && (tab.id === "elements" || tab.id === "text" || tab.id === "photos")}
+            className="h-11 w-11"
+            onClick={() => setActiveTab((prev) => (prev === tab.id ? null : tab.id))}
           >
-            <Stage
-              ref={stageRef}
-              width={doc.width * scale}
-              height={doc.height * scale}
-              scaleX={scale}
-              scaleY={scale}
-              onClick={handleStageClick}
-              onTap={handleStageClick}
+            {tab.icon}
+          </IconBtn>
+        ))}
+        <div className="mx-1 h-6 w-px bg-border md:my-1 md:h-px md:w-6" />
+        <IconBtn label="Undo" disabled={!historyState.canUndo} onClick={undo} className="h-11 w-11">
+          <Undo2 className="h-5 w-5" />
+        </IconBtn>
+        <IconBtn label="Redo" disabled={!historyState.canRedo} onClick={redo} className="h-11 w-11">
+          <Redo2 className="h-5 w-5" />
+        </IconBtn>
+        <div className="mx-1 h-6 w-px bg-border md:my-1 md:h-px md:w-6" />
+        <IconBtn
+          label={view.pagesOpen ? "Hide pages" : "Show pages"}
+          active={view.pagesOpen}
+          className="h-11 w-11"
+          onClick={() => setView({ pagesOpen: !view.pagesOpen })}
+        >
+          <Files className="h-5 w-5" />
+        </IconBtn>
+        <ViewOptions api={api} />
+        {/* mobile: properties trigger */}
+        <div className="lg:hidden">
+          <IconBtn label="Properties" active={propsSheetOpen} className="h-11 w-11" onClick={() => setPropsSheetOpen((v) => !v)}>
+            <SlidersHorizontal className="h-5 w-5" />
+          </IconBtn>
+        </div>
+      </nav>
+
+      {/* ---------------- left panel ---------------- */}
+      {activeTab !== null ? (
+        <aside
+          className="absolute inset-y-0 left-[52px] z-30 flex w-[300px] max-w-[86vw] flex-col border-r bg-card shadow-2xl md:static md:left-auto md:z-auto md:shadow-none"
+          aria-label={`${TABS.find((t) => t.id === activeTab)?.label} panel`}
+        >
+          <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{TABS.find((t) => t.id === activeTab)?.label}</h2>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setActiveTab(null)} aria-label="Close panel">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {activeTab === "elements" && <ElementsPanel api={api} />}
+            {activeTab === "text" && <TextPanel api={api} />}
+            {activeTab === "photos" && <PhotosPanel api={api} />}
+            {activeTab === "layers" && <LayersPanel api={api} />}
+            {activeTab === "background" && <BackgroundPanel api={api} />}
+          </div>
+        </aside>
+      ) : null}
+
+      {/* ---------------- canvas column ---------------- */}
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 flex-1">
+          {view.showRulers && viewport.w > 0 ? (
+            <Ruler axis="v" zoom={view.zoom} pan={view.panY} docSize={doc.height} size={viewport.h} />
+          ) : null}
+          <div className="relative min-w-0 flex-1">
+            {view.showRulers && viewport.w > 0 ? (
+              <div className="absolute inset-x-0 top-0 z-10 border-b bg-card">
+                <Ruler axis="h" zoom={view.zoom} pan={view.panX} docSize={doc.width} size={viewport.w} />
+              </div>
+            ) : null}
+            <div className={cn("h-full w-full", view.showRulers && "pt-[22px]")}>
+              <StageView
+                api={api}
+                editingId={editingId}
+                onViewportResize={onViewportResize}
+                onContextMenu={(x, y, elementId) => setContextMenu({ x, y, elementId })}
+              />
+            </div>
+          </div>
+
+          {/* zoom controls */}
+          <div className="absolute bottom-3 right-3 z-20 flex items-center gap-0.5 rounded-lg border bg-card/95 p-1 shadow-md backdrop-blur">
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => zoomBy(1 / 1.15)} aria-label="Zoom out">
+              <Minus className="h-3.5 w-3.5" />
+            </Button>
+            <button
+              type="button"
+              className="w-12 text-center text-xs tabular-nums hover:underline"
+              onClick={() => setZoom(1)}
+              aria-label="Reset zoom to 100%"
+              title="Reset to 100%"
             >
-              <Layer ref={layerRef} visible={false} />
-              <Layer>
-                <Rect x={0} y={0} width={doc.width} height={doc.height} fill={bg?.type === "solid" ? bg.color : "#ffffff"} id="page-bg" />
-                {page?.elements.filter((e) => !e.hidden).map((el) => {
-                  const common = {
-                    key: el.id,
-                    elementId: el.id,
-                    x: el.x,
-                    y: el.y,
-                    rotation: el.rotation,
-                    opacity: el.opacity,
-                    draggable: canEdit && !el.locked,
-                    onClick: () => setSelectedIds([el.id]),
-                    onTap: () => setSelectedIds([el.id]),
-                    onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => updateElement(el.id, { x: e.target.x(), y: e.target.y() }),
-                    onTransformEnd: (e: Konva.KonvaEventObject<Event>) => {
-                      const node = e.target
-                      updateElement(el.id, {
-                        x: node.x(),
-                        y: node.y(),
-                        width: Math.max(10, node.width() * node.scaleX()),
-                        height: Math.max(10, node.height() * node.scaleY()),
-                        rotation: node.rotation(),
-                      })
-                      node.scaleX(1)
-                      node.scaleY(1)
-                    },
-                  }
-                  if (el.type === "text") {
-                    const t = el as TextElement
-                    return (
-                      <KonvaText
-                        {...common}
-                        key={el.id}
-                        ref={(node) => attachNode(node, el.id)}
-                        text={t.uppercase ? t.text.toUpperCase() : t.text}
-                        fontSize={t.fontSize}
-                        fontFamily={t.fontFamily}
-                        fontStyle={`${t.italic ? "italic " : ""}${t.fontWeight >= 600 ? "bold" : "normal"}`}
-                        textDecoration={`${t.underline ? "underline " : ""}${t.strike ? "line-through" : ""}`.trim()}
-                        align={t.align}
-                        lineHeight={t.lineHeight}
-                        letterSpacing={t.letterSpacing}
-                        fill={t.color}
-                        width={t.width}
-                      />
-                    )
-                  }
-                  if (el.type === "shape") {
-                    const s = el as ShapeElement
-                    if (s.variant === "ellipse") {
-                      return (
-                        <Ellipse
-                          {...common}
-                          key={el.id}
-                          ref={(node) => attachNode(node, el.id)}
-                          x={s.x + s.width / 2}
-                          y={s.y + s.height / 2}
-                          offsetX={s.width / 2}
-                          offsetY={s.height / 2}
-                          radiusX={s.width / 2}
-                          radiusY={s.height / 2}
-                          fill={s.fill}
-                          stroke={s.stroke === "transparent" ? undefined : s.stroke}
-                          strokeWidth={s.strokeWidth}
-                        />
-                      )
-                    }
-                    return (
-                      <Rect
-                        {...common}
-                        key={el.id}
-                        ref={(node) => attachNode(node, el.id)}
-                        width={s.width}
-                        height={s.height}
-                        cornerRadius={s.cornerRadius}
-                        fill={s.fill}
-                        stroke={s.stroke === "transparent" ? undefined : s.stroke}
-                        strokeWidth={s.strokeWidth}
-                      />
-                    )
-                  }
-                  if (el.type === "image") {
-                    const imgEl = el as ImageElement
-                    const img = images[imgEl.id]
-                    if (!img) return null
-                    return (
-                      <KonvaImage
-                        {...common}
-                        key={el.id}
-                        ref={(node) => attachNode(node, el.id)}
-                        image={img}
-                        width={imgEl.width}
-                        height={imgEl.height}
-                        scaleX={imgEl.flipH ? -1 : 1}
-                        scaleY={imgEl.flipV ? -1 : 1}
-                      />
-                    )
-                  }
-                  // unsupported element types render as placeholder box (never crash)
-                  return (
-                    <Rect
-                      {...common}
-                      key={el.id}
-                      ref={(node) => attachNode(node, el.id)}
-                      width={el.width}
-                      height={el.height}
-                      fill="rgba(139,92,246,0.15)"
-                      stroke="#8b5cf6"
-                      strokeWidth={2}
-                      dash={[6, 4]}
-                    />
-                  )
-                })}
-                <Transformer
-                  ref={trRef}
-                  rotateEnabled
-                  keepRatio={false}
-                  boundBoxFunc={(oldBox, newBox) => (newBox.width < 10 || newBox.height < 10 ? oldBox : newBox)}
-                />
-              </Layer>
-            </Stage>
+              {Math.round(view.zoom * 100)}%
+            </button>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => zoomBy(1.15)} aria-label="Zoom in">
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" onClick={fitToScreen}>
+              <Maximize className="h-3.5 w-3.5" /> Fit
+            </Button>
           </div>
         </div>
-        <div className="absolute bottom-3 right-3 flex items-center gap-1 rounded-lg border bg-card p-1 text-xs">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setZoom((z) => Math.max(0.05, z - 0.1))} aria-label="Zoom out">−</Button>
-          <span className="w-10 text-center">{Math.round(zoom * 100)}%</span>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setZoom((z) => Math.min(4, z + 0.1))} aria-label="Zoom in">+</Button>
-          <Button variant="ghost" size="sm" className="h-7 px-2" onClick={fitToScreen}>Fit</Button>
-        </div>
+
+        {/* pages strip */}
+        {showPagesStrip ? <PagesPanel api={api} onClose={doc.pages.length > 1 ? undefined : () => setView({ pagesOpen: false })} /> : null}
+
+        {/* mobile properties bottom sheet */}
+        {propsSheetOpen ? (
+          <div className="absolute inset-0 z-30 flex flex-col justify-end lg:hidden" onClick={() => setPropsSheetOpen(false)}>
+            <div className="flex max-h-[55%] flex-col rounded-t-2xl border-t bg-card shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Properties</h2>
+                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setPropsSheetOpen(false)} aria-label="Close properties">
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <PropertiesPanel api={api} />
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (!file) return
-          const reader = new FileReader()
-          reader.onload = () => {
-            const src = String(reader.result)
-            const image = new window.Image()
-            image.onload = () => {
-              const maxW = doc.width * 0.6
-              const ratio = Math.min(1, maxW / image.width)
-              addElement({
-                id: uid("img"),
-                type: "image",
-                src,
-                x: 100,
-                y: 100,
-                width: image.width * ratio,
-                height: image.height * ratio,
-                rotation: 0,
-                opacity: 1,
-                cornerRadius: 0,
-                filters: { brightness: 100, contrast: 100, saturation: 100, hue: 0, blur: 0, grayscale: 0, sepia: 0, invert: 0, vignette: 0 },
-              } as ImageElement)
-            }
-            image.src = src
-          }
-          reader.readAsDataURL(file)
-          e.target.value = ""
+      {/* ---------------- properties (desktop) ---------------- */}
+      <aside className="hidden w-[300px] shrink-0 border-l bg-card lg:block" aria-label="Properties">
+        <PropertiesPanel api={api} />
+      </aside>
+
+      <CanvasContextMenu
+        api={api}
+        menu={contextMenu}
+        onClose={() => setContextMenu(null)}
+        onRename={() => {
+          setActiveTab("layers")
         }}
       />
-      <ToastBridge toast={toast} />
     </div>
   )
 })
 
-function ToolBtn({ children, label, onClick, disabled }: { children: React.ReactNode; label: string; onClick?: () => void; disabled?: boolean }) {
+/* ------------------------------ view options popover ------------------------------ */
+
+function ViewOptions({ api }: { api: CanvasApi }) {
+  const { view, setView } = api
   return (
-    <TooltipProvider delayDuration={200}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon" className="min-h-[40px] min-w-[40px]" onClick={onClick} disabled={disabled} aria-label={label}>
-            {children}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="right">{label}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-11 w-11" aria-label="View options" title="Rulers, grid & snapping">
+          <Settings2 className="h-5 w-5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent side="right" align="end" className="w-60 space-y-3">
+        <div className="flex items-center justify-between">
+          <Label className="flex items-center gap-1.5 text-xs">
+            <RulerIcon className="h-3.5 w-3.5" /> Rulers
+          </Label>
+          <Switch checked={view.showRulers} onCheckedChange={(v) => setView({ showRulers: v })} aria-label="Toggle rulers" />
+        </div>
+        <div className="flex items-center justify-between">
+          <Label className="flex items-center gap-1.5 text-xs">
+            <Grid2x2 className="h-3.5 w-3.5" /> Grid
+          </Label>
+          <Switch checked={view.showGrid} onCheckedChange={(v) => setView({ showGrid: v })} aria-label="Toggle grid" />
+        </div>
+        {view.showGrid ? (
+          <div className="flex items-center justify-between gap-2">
+            <Label className="text-xs text-muted-foreground">Grid size</Label>
+            <Select value={String(view.gridSize)} onValueChange={(v) => setView({ gridSize: Number(v) })}>
+              <SelectTrigger className="h-7 w-20 text-xs" aria-label="Grid size">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {[10, 20, 50].map((s) => (
+                  <SelectItem key={s} value={String(s)}>
+                    {s}px
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
+        <div className="flex items-center justify-between">
+          <Label className="flex items-center gap-1.5 text-xs">
+            <Magnet className="h-3.5 w-3.5" /> Snap to grid
+          </Label>
+          <Switch checked={view.snapToGrid} onCheckedChange={(v) => setView({ snapToGrid: v })} aria-label="Toggle snap to grid" />
+        </div>
+        <div className="flex items-center justify-between">
+          <Label className="flex items-center gap-1.5 text-xs">
+            <SquareDashed className="h-3.5 w-3.5" /> Safe margins
+          </Label>
+          <Switch checked={view.showSafe} onCheckedChange={(v) => setView({ showSafe: v })} aria-label="Toggle safe margins" />
+        </div>
+        <p className="border-t pt-2 text-[10px] leading-relaxed text-muted-foreground">
+          Snapping is always on while dragging: elements snap to page center/edges and to other elements.
+        </p>
+      </PopoverContent>
+    </Popover>
   )
 }
 
-function ToastBridge({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
+/* ------------------------------ rulers ------------------------------ */
+
+function Ruler({ axis, zoom, pan, docSize, size }: { axis: "h" | "v"; zoom: number; pan: number; docSize: number; size: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
-    void toast
-  }, [toast])
-  return null
-}
-
-function dataUrlToBlob(dataUrl: string): Blob {
-  const [meta, b64] = dataUrl.split(",")
-  const mime = meta.match(/:(.*?);/)?.[1] ?? "image/png"
-  const bin = atob(b64)
-  const arr = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i += 1) arr[i] = bin.charCodeAt(i)
-  return new Blob([arr], { type: mime })
-}
-
-async function stageToBlob(stage: Konva.Stage, scale: number, transparent: boolean): Promise<Blob> {
-  const dataUrl = stage.toDataURL({ pixelRatio: scale, mimeType: transparent ? "image/png" : "image/png" })
-  return dataUrlToBlob(dataUrl)
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const thickness = 22
+    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    if (axis === "h") {
+      canvas.width = Math.max(1, size * dpr)
+      canvas.height = thickness * dpr
+    } else {
+      canvas.width = thickness * dpr
+      canvas.height = Math.max(1, size * dpr)
+    }
+    canvas.style.width = axis === "h" ? `${size}px` : `${thickness}px`
+    canvas.style.height = axis === "h" ? `${thickness}px` : `${size}px`
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, size, thickness)
+    const styles = getComputedStyle(canvas)
+    const fg = styles.color || "#6b7280"
+    ctx.strokeStyle = fg
+    ctx.fillStyle = fg
+    ctx.font = "9px Inter, sans-serif"
+    // choose a tick step that gives ≥ 56px spacing
+    const steps = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
+    const step = steps.find((s) => s * zoom >= 56) ?? 10000
+    const startDoc = Math.max(0, Math.floor((0 - pan) / zoom / step) * step)
+    const endDoc = Math.min(docSize, Math.ceil((size - pan) / zoom / step) * step)
+    for (let d = startDoc; d <= endDoc; d += step) {
+      const s = d * zoom + pan
+      ctx.beginPath()
+      if (axis === "h") {
+        ctx.moveTo(s, thickness - 8)
+        ctx.lineTo(s, thickness)
+        ctx.fillText(String(d), s + 3, 9)
+      } else {
+        ctx.moveTo(thickness - 8, s)
+        ctx.lineTo(thickness, s)
+        ctx.save()
+        ctx.translate(9, s - 3)
+        ctx.rotate(-Math.PI / 2)
+        ctx.fillText(String(d), 0, 0)
+        ctx.restore()
+      }
+      ctx.stroke()
+    }
+  }, [axis, zoom, pan, docSize, size])
+  return <canvas ref={canvasRef} className="block bg-card text-muted-foreground" role="img" aria-label={`${axis === "h" ? "Horizontal" : "Vertical"} ruler in pixels`} />
 }
 
 export default CanvasEditor
