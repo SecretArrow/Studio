@@ -100,8 +100,10 @@ export function TemplatePreviewBox({
  * zero by that intermediate scroller (rootMargin never applies through it).
  * Using the nearest scrollable ancestor as the observer root makes the 300px
  * pre-roll work in any layout (inner scrollers, horizontal rails, window).
+ * Exported so other lazy-preview components (e.g. project cards) share the
+ * exact same scroll-root behavior.
  */
-function findScrollRoot(el: HTMLElement): HTMLElement | null {
+export function findScrollRoot(el: HTMLElement): HTMLElement | null {
   let node: HTMLElement | null = el.parentElement
   while (node && node !== document.body) {
     const style = getComputedStyle(node)

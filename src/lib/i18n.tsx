@@ -170,6 +170,12 @@ const en = {
   "pack.loadError": "Templates could not be loaded. Check your connection and try again.",
   "pack.retry": "Retry",
   "pack.empty": "No templates in this pack yet.",
+  "tplLang.label": "Template language",
+  "tplLang.original": "Original",
+  "tplLang.covered": "% translated — the rest completes automatically when you use this template",
+  "tplLang.fully": "Fully translated",
+  "tplLang.unavailable": "Translation unavailable — showing original",
+  "tplLang.rtl": "RTL",
 }
 
 const id: typeof en = {
@@ -333,6 +339,12 @@ const id: typeof en = {
   "pack.loadError": "Template tidak dapat dimuat. Periksa koneksi Anda dan coba lagi.",
   "pack.retry": "Coba lagi",
   "pack.empty": "Belum ada template di paket ini.",
+  "tplLang.label": "Bahasa template",
+  "tplLang.original": "Asli",
+  "tplLang.covered": "% diterjemahkan — sisanya dilengkapi otomatis saat Anda memakai template ini",
+  "tplLang.fully": "Diterjemahkan lengkap",
+  "tplLang.unavailable": "Terjemahan tidak tersedia — menampilkan teks asli",
+  "tplLang.rtl": "RTL",
 }
 
 export const dictionaries = { en, id }

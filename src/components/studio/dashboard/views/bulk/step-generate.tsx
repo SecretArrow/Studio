@@ -2,7 +2,7 @@
 
 /** Step 4 — preview the first rows, then batch-render every row to PNGs inside a ZIP. */
 
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import JSZip from "jszip"
 import { useAppStore, type SessionUser } from "@/lib/studio/app-store"
 import { api, downloadBlob } from "@/lib/studio/api-client"
@@ -41,6 +41,14 @@ export function StepGenerate({ doc, fields, rows, source, user }: Props) {
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<RunResult | null>(null)
   const cancelRef = useRef(false)
+  // set when the component unmounts so the batch loop stops rendering rows,
+  // releases its zip buffer and skips post-unmount setState/download
+  const unmountedRef = useRef(false)
+  useEffect(() => {
+    return () => {
+      unmountedRef.current = true
+    }
+  }, [])
 
   const mappedFields = useMemo(() => fields.filter((f) => f.column), [fields])
   const previews = useMemo(
@@ -89,7 +97,7 @@ export function StepGenerate({ doc, fields, rows, source, user }: Props) {
 
     try {
       for (let i = 0; i < rows.length; i += 1) {
-        if (cancelRef.current) break
+        if (cancelRef.current || unmountedRef.current) break
         const row = rows[i]
         try {
           const rowDoc = applyRow(doc, fields, row)
@@ -102,19 +110,19 @@ export function StepGenerate({ doc, fields, rows, source, user }: Props) {
         } catch (err) {
           errors.push({ row: i + 1, message: err instanceof Error ? err.message : "Unknown rendering error" })
         }
-        setProgress(i + 1)
+        if (!unmountedRef.current) setProgress(i + 1)
         if (jobId && (i + 1) % 5 === 0) await reportJob(jobId, { done: i + 1 })
         await yieldToBrowser()
       }
 
-      const cancelled = cancelRef.current
+      const cancelled = cancelRef.current || unmountedRef.current
       let zipName: string | null = null
       if (produced > 0 && !cancelled) {
         zipName = `studio-bulk-${produced}.zip`
         const zipped = await zip.generateAsync({ type: "blob", compression: "STORE" })
         downloadBlob(zipped, zipName)
       }
-      setResult({ produced, cancelled, zipName, errors })
+      if (!unmountedRef.current) setResult({ produced, cancelled, zipName, errors })
 
       if (jobId) {
         const allFailed = produced === 0 && errors.length > 0
@@ -128,10 +136,10 @@ export function StepGenerate({ doc, fields, rows, source, user }: Props) {
         toast({ title: `Generated ${produced} design${produced === 1 ? "" : "s"}`, description: `${zipName} is downloading.` })
       }
     } catch (err) {
-      setResult({ produced, cancelled: false, zipName: null, errors: [...errors, { row: progress + 1, message: err instanceof Error ? err.message : "Batch failed" }] })
+      if (!unmountedRef.current) setResult({ produced, cancelled: false, zipName: null, errors: [...errors, { row: progress + 1, message: err instanceof Error ? err.message : "Batch failed" }] })
       if (jobId) await reportJob(jobId, { status: "failed", error: err instanceof Error ? err.message : "Batch failed" })
     } finally {
-      setRunning(false)
+      if (!unmountedRef.current) setRunning(false)
     }
   }
 

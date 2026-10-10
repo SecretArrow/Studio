@@ -9,6 +9,7 @@
 import type { ExportRequest, ExportResult } from "@/components/studio/editors/types"
 import type { BackgroundSpec, DesignDoc, DesignElement, ImageElement, PageModel, ShapeElement, TableElement, TextElement, StickyElement, FrameElement, QrElement, ChartElement, FreehandElement, ConnectorElement, IconElement } from "@/lib/design/types"
 import { ICON_LIBRARY, iconToSvg } from "@/lib/design/icons"
+import { LruMap } from "@/lib/studio/lru"
 import {
   arrowHeadPoints,
   fontString,
@@ -22,7 +23,7 @@ import { layoutChart } from "./charts"
 
 /* ------------------------------ image loading ------------------------------ */
 
-const imageCache = new Map<string, Promise<HTMLImageElement | null>>()
+const imageCache = new LruMap<string, Promise<HTMLImageElement | null>>(120)
 
 export function loadImage(src: string): Promise<HTMLImageElement | null> {
   const hit = imageCache.get(src)
@@ -59,7 +60,7 @@ async function toDataUrl(src: string): Promise<string | null> {
 /* ------------------------------ QR generation ------------------------------ */
 
 let qrPromise: Promise<typeof import("qrcode")> | null = null
-const qrCache = new Map<string, Promise<string>>()
+const qrCache = new LruMap<string, Promise<string>>(100)
 
 /** QR code as PNG data URL. `qrcode` is dynamically imported to keep bundles lean. */
 export function qrDataUrl(data: string, fg = "#111827", bg = "#ffffff", width = 512): Promise<string> {

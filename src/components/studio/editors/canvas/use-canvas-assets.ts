@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react"
 import type { BackgroundSpec, DesignElement, ImageElement, QrElement } from "@/lib/design/types"
 import { DEFAULT_IMAGE_FILTERS } from "@/lib/design/types"
+import { LruMap } from "@/lib/studio/lru"
 import { loadImage, qrDataUrl } from "@/lib/editor/export"
 
 export interface ProcessedImage {
@@ -20,7 +21,13 @@ export interface ProcessedImage {
   natH: number
 }
 
-const filterCanvasCache = new Map<string, Promise<ProcessedImage | null>>()
+/**
+ * Baked-filter canvases are native image resolution (a 4000×3000 photo ≈ 45MB
+ * as RGBA), so the cache MUST be bounded — every filter-slider change makes a
+ * new key. LRU-capped; evicted entries are simply recomputed on demand.
+ */
+const FILTER_CACHE_CAP = 32
+const filterCanvasCache = new LruMap<string, Promise<ProcessedImage | null>>(FILTER_CACHE_CAP)
 
 function getProcessed(el: ImageElement): Promise<ProcessedImage | null> {
   const key = `${el.src}|${JSON.stringify(el.filters ?? DEFAULT_IMAGE_FILTERS)}`

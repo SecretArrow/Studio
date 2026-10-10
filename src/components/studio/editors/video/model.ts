@@ -166,26 +166,44 @@ export interface ProbeResult {
 /**
 * Probe a media source by actually loading it. A source that fires `error`
 * (typical for object URLs from a previous session) is reported as dead.
+* The throwaway probe element releases its fetched resource once settled.
 */
 export function probeMedia(src: string, kind: MediaKind): Promise<ProbeResult> {
   return new Promise((resolve) => {
     let settled = false
+    const img = kind === "image" ? new Image() : null
+    const el = kind === "image" ? null : document.createElement("video")
     const finish = (r: ProbeResult) => {
       if (settled) return
       settled = true
       window.clearTimeout(timer)
+      // release the probe's buffered media resource right away
+      if (img) {
+        img.onload = null
+        img.onerror = null
+        img.removeAttribute("src")
+      }
+      if (el) {
+        el.onloadedmetadata = null
+        el.onerror = null
+        el.removeAttribute("src")
+        try {
+          el.load()
+        } catch {
+          /* ignore */
+        }
+      }
       resolve(r)
     }
     const timer = window.setTimeout(() => finish({ dead: false, duration: 0, width: 0, height: 0 }), 6000)
 
-    if (kind === "image") {
-      const img = new Image()
+    if (img) {
       img.onload = () => finish({ dead: false, duration: 0, width: img.naturalWidth, height: img.naturalHeight })
       img.onerror = () => finish({ dead: true, duration: 0, width: 0, height: 0 })
       img.src = src
       return
     }
-    const el = document.createElement("video")
+    if (!el) return finish({ dead: true, duration: 0, width: 0, height: 0 })
     el.preload = "metadata"
     el.onloadedmetadata = () => finish({ dead: false, duration: Number.isFinite(el.duration) ? el.duration * 1000 : 0, width: el.videoWidth, height: el.videoHeight })
     el.onerror = () => finish({ dead: true, duration: 0, width: 0, height: 0 })

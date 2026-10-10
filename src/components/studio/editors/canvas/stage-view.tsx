@@ -74,6 +74,15 @@ export function StageView({ api, editingId, onViewportResize, onContextMenu }: S
     viewRef.current = api.view
   }, [api.view])
 
+  // unmount hygiene: drop pending gesture/long-press timers so they can never
+  // fire into a torn-down stage (their closures are released immediately)
+  useEffect(() => {
+    return () => {
+      if (gestureCommit.current) clearTimeout(gestureCommit.current)
+      if (longPress.current?.timer) clearTimeout(longPress.current.timer)
+    }
+  }, [])
+
   const { doc, page, canEdit, selectedIds } = api
   const elements = page.elements
   const images = useProcessedImages(elements, page.background)

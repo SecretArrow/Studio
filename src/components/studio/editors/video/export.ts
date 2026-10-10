@@ -121,53 +121,65 @@ export async function recordTimeline(opts: RecordOptions): Promise<RecordOutcome
     recorder.onerror = () => reject(new Error("Recording failed mid-export. Try a smaller canvas size or shorter timeline."))
   })
 
-  primeMedia(config, pool, 0)
-  recorder.start(250)
-  const startedAt = performance.now()
-  let lastReport = 0
+  try {
+    primeMedia(config, pool, 0)
+    recorder.start(250)
+    const startedAt = performance.now()
+    let lastReport = 0
 
-  await new Promise<void>((resolve) => {
-    const tick = () => {
-      if (isCancelled()) {
-        resolve()
-        return
-      }
-      const elapsed = performance.now() - startedAt
-      const t = Math.min(elapsed, total)
-      driveMedia(config, pool, t, true)
-      drawFrame(ctx, config, t, pool)
-      const fraction = t / total
-      if (elapsed - lastReport > 100) {
-        lastReport = elapsed
-        onProgress(fraction)
-      }
-      if (elapsed >= total) {
-        resolve()
-        return
+    await new Promise<void>((resolve) => {
+      const tick = () => {
+        if (isCancelled()) {
+          resolve()
+          return
+        }
+        const elapsed = performance.now() - startedAt
+        const t = Math.min(elapsed, total)
+        driveMedia(config, pool, t, true)
+        drawFrame(ctx, config, t, pool)
+        const fraction = t / total
+        if (elapsed - lastReport > 100) {
+          lastReport = elapsed
+          onProgress(fraction)
+        }
+        if (elapsed >= total) {
+          resolve()
+          return
+        }
+        requestAnimationFrame(tick)
       }
       requestAnimationFrame(tick)
+    })
+
+    // Let the encoder flush the final frames.
+    await new Promise((r) => setTimeout(r, 150))
+    pool.pauseAll()
+    if (recorder.state !== "inactive") recorder.stop()
+    await stopped
+  } finally {
+    if (recorder.state !== "inactive") {
+      try {
+        recorder.stop()
+      } catch {
+        /* already stopped */
+      }
     }
-    requestAnimationFrame(tick)
-  })
-
-  // Let the encoder flush the final frames.
-  await new Promise((r) => setTimeout(r, 150))
-  pool.pauseAll()
-  if (recorder.state !== "inactive") recorder.stop()
-  await stopped
-
-  // Restore preview-only audio routing.
-  if (dest) {
-    for (const el of pool.mediaElements()) {
-      const node = pool.mediaNode(el)
-      if (node) {
-        try {
-          node.disconnect(dest)
-        } catch {
-          /* already disconnected */
+    // Restore preview-only audio routing (also on the error path).
+    if (dest) {
+      for (const el of pool.mediaElements()) {
+        const node = pool.mediaNode(el)
+        if (node) {
+          try {
+            node.disconnect(dest)
+          } catch {
+            /* already disconnected */
+          }
         }
       }
     }
+    // Release the canvas capture track and the recording-only audio tracks —
+    // MediaStream tracks are never GC'd while live, so they MUST be stopped.
+    for (const track of stream.getTracks()) track.stop()
   }
 
   if (isCancelled()) return { blob: null }

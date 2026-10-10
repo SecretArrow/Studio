@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createLimiter } from "@/lib/studio/preview-cache"
+import { LruMap } from "@/lib/studio/lru"
 import { parseThumbKey, thumbsToEvict } from "@/lib/studio/local-store"
 
 function deferred<T>() {
@@ -131,5 +132,88 @@ describe("thumbsToEvict", () => {
     const copy = [...entries]
     thumbsToEvict(entries, 1)
     expect(entries).toEqual(copy)
+  })
+})
+
+describe("LruMap", () => {
+  it("stores and retrieves values like a Map", () => {
+    const lru = new LruMap<string, number>(3)
+    expect(lru.size).toBe(0)
+    expect(lru.has("a")).toBe(false)
+    expect(lru.get("a")).toBeUndefined()
+    lru.set("a", 1).set("b", 2)
+    expect(lru.get("a")).toBe(1)
+    expect(lru.get("b")).toBe(2)
+    expect(lru.has("a")).toBe(true)
+    expect(lru.size).toBe(2)
+    expect(lru.delete("a")).toBe(true)
+    expect(lru.has("a")).toBe(false)
+    expect(lru.delete("a")).toBe(false)
+  })
+
+  it("evicts the least-recently-used entry when over the cap", () => {
+    const lru = new LruMap<string, number>(2)
+    lru.set("a", 1)
+    lru.set("b", 2)
+    lru.set("c", 3)
+    expect(lru.size).toBe(2)
+    expect(lru.has("a")).toBe(false) // oldest evicted
+    expect(lru.get("b")).toBe(2)
+    expect(lru.get("c")).toBe(3)
+  })
+
+  it("refreshes recency on get", () => {
+    const lru = new LruMap<string, number>(2)
+    lru.set("a", 1)
+    lru.set("b", 2)
+    expect(lru.get("a")).toBe(1) // a is now most-recent
+    lru.set("c", 3) // evicts b, not a
+    expect(lru.has("a")).toBe(true)
+    expect(lru.has("b")).toBe(false)
+    expect(lru.has("c")).toBe(true)
+  })
+
+  it("refreshes recency when overwriting an existing key", () => {
+    const lru = new LruMap<string, number>(2)
+    lru.set("a", 1)
+    lru.set("b", 2)
+    lru.set("a", 10) // overwrite refreshes order without growing
+    expect(lru.size).toBe(2)
+    lru.set("c", 3) // evicts b
+    expect(lru.has("b")).toBe(false)
+    expect(lru.get("a")).toBe(10)
+  })
+
+  it("never grows past the cap, even with rapid inserts", () => {
+    const lru = new LruMap<number, number>(80)
+    for (let i = 0; i < 500; i += 1) lru.set(i, i)
+    expect(lru.size).toBe(80)
+    expect(lru.has(0)).toBe(false)
+    expect(lru.has(499)).toBe(true)
+  })
+
+  it("clamps the cap to at least 1", () => {
+    const lru = new LruMap<string, number>(0)
+    lru.set("a", 1)
+    lru.set("b", 2)
+    expect(lru.size).toBe(1)
+    expect(lru.get("b")).toBe(2)
+  })
+
+  it("clears everything", () => {
+    const lru = new LruMap<string, number>(2)
+    lru.set("a", 1)
+    lru.set("b", 2)
+    lru.clear()
+    expect(lru.size).toBe(0)
+    expect(lru.get("a")).toBeUndefined()
+  })
+
+  it("caches promise values (the real usage)", async () => {
+    const lru = new LruMap<string, Promise<number>>(2)
+    const p = Promise.resolve(7)
+    lru.set("k", p)
+    expect(lru.get("k")).toBe(p)
+    await expect(lru.get("k")).resolves.toBe(7)
   })
 })

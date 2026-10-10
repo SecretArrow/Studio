@@ -1,0 +1,762 @@
+     1→"use client"
+     2→
+     3→/**
+     4→* Video editor (doc.type "video", doc.config = VideoConfig).
+     5→* Media import (object URLs, session-scoped with relink UI), multi-track
+     6→* timeline with drag/trim/snap, canvas preview player, text/sticker overlays,
+     7→* subtitles with SRT import, and realtime WebM/MP4 export via MediaRecorder.
+     8→*/
+     9→
+    10→import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react"
+    11→import type { DesignDoc, VideoClip, VideoTrack } from "@/lib/design/types"
+    12→import { uid } from "@/lib/design/types"
+    13→import {
+    14→  ASPECT_PRESETS,
+    15→  clipEnd,
+    16→  createClip,
+    17→  ensureVideoConfig,
+    18→  fileKindOf,
+    19→  fmtClock,
+    20→  formatSrt,
+    21→  isActiveAt,
+    22→  parseSrt,
+    23→  probeMedia,
+    24→  totalDurationMs,
+    25→  trackForKind,
+    26→} from "./video/model"
+    27→import { MediaPool } from "./video/media-pool"
+    28→import { exportCurrentFramePng, pickVideoMime, recordTimeline, renderThumbnail } from "./video/export"
+    29→import { PreviewPlayer } from "./video/preview"
+    30→import { Timeline } from "./video/timeline"
+    31→import { PropertiesPanel } from "./video/properties-panel"
+    32→import type { EditorHandle, EditorProps, ExportResult } from "./types"
+    33→import { HistoryStore } from "@/lib/editor/history"
+    34→import { useToast } from "@/hooks/use-toast"
+    35→import { Button } from "@/components/ui/button"
+    36→import { Progress } from "@/components/ui/progress"
+    37→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+    38→import { cn } from "@/lib/utils"
+    39→import {
+    40→  Clock,
+    41→  Film,
+    42→  Info,
+    43→  Loader2,
+    44→  MonitorPlay,
+    45→  Redo2,
+    46→  Type as TypeIcon,
+    47→  Undo2,
+    48→  Upload,
+    49→} from "lucide-react"
+    50→
+    51→const clampMs = (v: number, min: number, max: number) => Math.min(Math.max(Math.round(v), min), max)
+    52→
+    53→interface VideoConfigShape {
+    54→  clips?: unknown
+    55→  tracks?: unknown
+    56→}
+    57→
+    58→function maxEndOnTrack(clips: VideoClip[], trackId: string): number {
+    59→  return clips.reduce((max, c) => (c.trackId === trackId ? Math.max(max, clipEnd(c)) : max), 0)
+    60→}
+    61→
+    62→const VideoEditor = forwardRef<EditorHandle, EditorProps>(function VideoEditor(
+    63→  { project, initialDoc, role, onDocChange, registerHandle },
+    64→  _ref,
+    65→) {
+    66→  const canEdit = role === "owner" || role === "editor"
+    67→  const { toast } = useToast()
+    68→
+    69→  const [doc, setDoc] = useState<DesignDoc>(initialDoc)
+    70→  const [selectedId, setSelectedId] = useState<string | null>(null)
+    71→  const [playing, setPlaying] = useState(false)
+    72→  const [playheadMs, setPlayheadMs] = useState(0)
+    73→  const [zoom, setZoom] = useState(60) // px per second
+    74→  const [deadSrcs, setDeadSrcs] = useState<Record<string, true>>({})
+    75→  const [importing, setImporting] = useState(false)
+    76→  const [exporting, setExporting] = useState({ active: false, progress: 0 })
+    77→  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
+    78→
+    79→  const docRef = useRef<DesignDoc>(initialDoc)
+    80→  const dirtyRef = useRef(false)
+    81→  const playheadRef = useRef(0)
+    82→  const cancelExportRef = useRef(false)
+    83→  const exportingRef = useRef(false)
+    84→  const relinkTargetRef = useRef<string | null>(null)
+    85→  const fileInputRef = useRef<HTMLInputElement>(null)
+    86→  const probedSrcsRef = useRef(new Set<string>())
+    87→  const [pool] = useState(() => new MediaPool())
+    88→  const [history] = useState(() => new HistoryStore(initialDoc, 60))
+    89→
+    90→  const config = useMemo(() => ensureVideoConfig(doc), [doc])
+    91→  const total = totalDurationMs(config)
+    92→  const selected = useMemo(() => config.clips.find((c) => c.id === selectedId) ?? null, [config, selectedId])
+    93→  const deadSet = useMemo(() => {
+    94→    const s = new Set<string>()
+    95→    for (const c of config.clips) if (c.src && deadSrcs[c.src]) s.add(c.id)
+    96→    return s
+    97→  }, [config.clips, deadSrcs])
+    98→  const hasMedia = useMemo(() => config.clips.some((c) => !!c.src), [config])
+    99→  const deadCount = deadSet.size
+   100→
+   101→  /* ---------------- commit / history ---------------- */
+   102→
+   103→  const syncHistoryState = useCallback(() => {
+   104→    setHistoryState({ canUndo: history.canUndo, canRedo: history.canRedo })
+   105→  }, [history])
+   106→
+   107→  const commit = useCallback(
+   108→    (next: DesignDoc, coalesceKey?: string) => {
+   109→      docRef.current = next
+   110→      dirtyRef.current = true
+   111→      setDoc(next)
+   112→      history.push(next, coalesceKey)
+   113→      syncHistoryState()
+   114→      onDocChange(next)
+   115→    },
+   116→    [history, onDocChange, syncHistoryState],
+   117→  )
+   118→
+   119→  const undo = useCallback(() => {
+   120→    const restored = history.undo() as DesignDoc | null
+   121→    if (!restored) return
+   122→    docRef.current = restored
+   123→    dirtyRef.current = true
+   124→    setDoc(restored)
+   125→    onDocChange(restored)
+   126→    syncHistoryState()
+   127→  }, [history, onDocChange, syncHistoryState])
+   128→
+   129→  const redo = useCallback(() => {
+   130→    const restored = history.redo() as DesignDoc | null
+   131→    if (!restored) return
+   132→    docRef.current = restored
+   133→    dirtyRef.current = true
+   134→    setDoc(restored)
+   135→    onDocChange(restored)
+   136→    syncHistoryState()
+   137→  }, [history, onDocChange, syncHistoryState])
+   138→
+   139→  /* ---------------- boot: normalize config ---------------- */
+   140→
+   141→  useEffect(() => {
+   142→    const t = setTimeout(() => {
+   143→      const d = docRef.current
+   144→      const cfg = ensureVideoConfig(d)
+   145→      const raw = (d.config ?? null) as VideoConfigShape | null
+   146→      const needsNormalize =
+   147→        !raw || !Array.isArray(raw.clips) || !Array.isArray(raw.tracks) || !raw.tracks.length || d.width !== cfg.canvas.width || d.height !== cfg.canvas.height
+   148→      if (needsNormalize) {
+   149→        commit({ ...d, width: cfg.canvas.width, height: cfg.canvas.height, config: cfg })
+   150→      }
+   151→    }, 0)
+   152→    return () => clearTimeout(t)
+   153→  }, [commit])
+   154→
+   155→  /* ---------------- pool + dead-src probing ---------------- */
+   156→
+   157→  useEffect(() => {
+   158→    pool.sync(config.clips)
+   159→  }, [config.clips, pool])
+   160→
+   161→  useEffect(() => {
+   162→    return () => pool.destroy()
+   163→  }, [pool])
+   164→
+   165→  useEffect(() => {
+   166→    let alive = true
+   167→    const t = setTimeout(async () => {
+   168→      const withSrc = config.clips.filter((c) => c.src && (c.kind === "video" || c.kind === "audio" || c.kind === "image"))
+   169→      const results = await Promise.all(
+   170→        withSrc.map(async (c) => {
+   171→          const src = c.src as string
+   172→          if (probedSrcsRef.current.has(src)) return null
+   173→          probedSrcsRef.current.add(src)
+   174→          const kind = c.kind === "image" ? "image" : c.kind === "audio" ? "audio" : "video"
+   175→          const r = await probeMedia(src, kind)
+   176→          return { src, dead: r.dead }
+   177→        }),
+   178→      )
+   179→      if (!alive) return
+   180→      setDeadSrcs((prev) => {
+   181→        const next: Record<string, true> = {}
+   182→        for (const k of Object.keys(prev)) next[k] = true
+   183→        let changed = false
+   184→        for (const r of results) {
+   185→          if (!r) continue
+   186→          if (r.dead && !next[r.src]) {
+   187→            next[r.src] = true
+   188→            changed = true
+   189→          } else if (!r.dead && next[r.src]) {
+   190→            delete next[r.src]
+   191→            changed = true
+   192→          }
+   193→        }
+   194→        return changed ? next : prev
+   195→      })
+   196→    }, 0)
+   197→    return () => {
+   198→      alive = false
+   199→      clearTimeout(t)
+   200→    }
+   201→  }, [config.clips])
+   202→
+   203→  /* ---------------- clip mutations ---------------- */
+   204→
+   205→  const patchClip = useCallback(
+   206→    (id: string, patch: Partial<VideoClip>, coalesceKey?: string) => {
+   207→      if (!canEdit) return
+   208→      const d = docRef.current
+   209→      const cfg = ensureVideoConfig(d)
+   210→      commit({ ...d, config: { ...cfg, clips: cfg.clips.map((c) => (c.id === id ? { ...c, ...patch } : c)) } }, coalesceKey)
+   211→    },
+   212→    [canEdit, commit],
+   213→  )
+   214→
+   215→  const patchTrack = useCallback(
+   216→    (id: string, patch: Partial<VideoTrack>) => {
+   217→      if (!canEdit) return
+   218→      const d = docRef.current
+   219→      const cfg = ensureVideoConfig(d)
+   220→      commit({ ...d, config: { ...cfg, tracks: cfg.tracks.map((t) => (t.id === id ? { ...t, ...patch } : t)) } })
+   221→    },
+   222→    [canEdit, commit],
+   223→  )
+   224→
+   225→  const deleteClipById = useCallback(
+   226→    (id: string) => {
+   227→      if (!canEdit) return
+   228→      const d = docRef.current
+   229→      const cfg = ensureVideoConfig(d)
+   230→      commit({ ...d, config: { ...cfg, clips: cfg.clips.filter((c) => c.id !== id) } })
+   231→      setSelectedId((cur) => (cur === id ? null : cur))
+   232→    },
+   233→    [canEdit, commit],
+   234→  )
+   235→
+   236→  const deleteSelected = useCallback(() => {
+   237→    if (selectedId) deleteClipById(selectedId)
+   238→  }, [deleteClipById, selectedId])
+   239→
+   240→  const splitAtPlayhead = useCallback(() => {
+   241→    if (!canEdit) return
+   242→    const d = docRef.current
+   243→    const cfg = ensureVideoConfig(d)
+   244→    const t = playheadRef.current
+   245→    const target =
+   246→      cfg.clips.find((c) => c.id === selectedId && isActiveAt(c, t)) ?? cfg.clips.find((c) => isActiveAt(c, t))
+   247→    if (!target || t <= target.start + 50 || t >= clipEnd(target) - 50) {
+   248→      toast({ title: "Nothing to split", description: "Move the playhead over a clip first." })
+   249→      return
+   250→    }
+   251→    const leftDur = t - target.start
+   252→    const left: VideoClip = { ...target, duration: leftDur, outPoint: target.inPoint + leftDur * target.speed }
+   253→    const right: VideoClip = {
+   254→      ...target,
+   255→      id: uid("clip"),
+   256→      start: t,
+   257→      duration: target.duration - leftDur,
+   258→      inPoint: target.inPoint + leftDur * target.speed,
+   259→      name: `${target.name} (2)`,
+   260→    }
+   261→    commit({ ...d, config: { ...cfg, clips: cfg.clips.flatMap((c) => (c.id === target.id ? [left, right] : [c])) } })
+   262→    setSelectedId(right.id)
+   263→  }, [canEdit, commit, selectedId, toast])
+   264→
+   265→  const duplicateSelected = useCallback(() => {
+   266→    if (!canEdit || !selectedId) return
+   267→    const d = docRef.current
+   268→    const cfg = ensureVideoConfig(d)
+   269→    const src = cfg.clips.find((c) => c.id === selectedId)
+   270→    if (!src) return
+   271→    const copy: VideoClip = { ...src, id: uid("clip"), start: clipEnd(src), name: `${src.name} copy` }
+   272→    commit({ ...d, config: { ...cfg, clips: [...cfg.clips, copy] } })
+   273→    setSelectedId(copy.id)
+   274→  }, [canEdit, commit, selectedId])
+   275→
+   276→  const applyAspect = useCallback(
+   277→    (presetId: string) => {
+   278→      if (!canEdit) return
+   279→      const preset = ASPECT_PRESETS.find((p) => p.id === presetId)
+   280→      if (!preset) return
+   281→      const d = docRef.current
+   282→      const cfg = ensureVideoConfig(d)
+   283→      commit({
+   284→        ...d,
+   285→        width: preset.width,
+   286→        height: preset.height,
+   287→        config: { ...cfg, canvas: { ...cfg.canvas, width: preset.width, height: preset.height } },
+   288→      })
+   289→    },
+   290→    [canEdit, commit],
+   291→  )
+   292→
+   293→  const addTextClip = useCallback(
+   294→    (kind: "text" | "sticker", text?: string) => {
+   295→      if (!canEdit) return
+   296→      const d = docRef.current
+   297→      const cfg = ensureVideoConfig(d)
+   298→      const trackId = trackForKind(cfg, "image")
+   299→      const isSticker = kind === "sticker"
+   300→      const clip = createClip({
+   301→        trackId,
+   302→        kind,
+   303→        start: playheadRef.current,
+   304→        duration: 3000,
+   305→        name: isSticker ? "Sticker" : "Text",
+   306→        element: isSticker
+   307→          ? { text: text ?? "⭐", fontSize: Math.round(cfg.canvas.height * 0.18), color: "#ffffff", align: "center", x: cfg.canvas.width / 2, y: cfg.canvas.height / 2 }
+   308→          : {
+   309→              text: "Your text",
+   310→              fontSize: Math.round(cfg.canvas.height * 0.08),
+   311→              color: "#ffffff",
+   312→              fontWeight: 700,
+   313→              align: "center",
+   314→              x: cfg.canvas.width / 2,
+   315→              y: cfg.canvas.height / 2,
+   316→              fontFamily: "Inter",
+   317→            },
+   318→      })
+   319→      commit({ ...d, config: { ...cfg, clips: [...cfg.clips, clip] } })
+   320→      setSelectedId(clip.id)
+   321→    },
+   322→    [canEdit, commit],
+   323→  )
+   324→
+   325→  /* ---------------- subtitles ---------------- */
+   326→
+   327→  const patchSubtitle = useCallback(
+   328→    (index: number, patch: Partial<{ start: number; end: number; text: string }>) => {
+   329→      if (!canEdit) return
+   330→      const d = docRef.current
+   331→      const cfg = ensureVideoConfig(d)
+   332→      const subs = (cfg.subtitles ?? []).map((s, i) => (i === index ? { ...s, ...patch } : s))
+   333→      commit({ ...d, config: { ...cfg, subtitles: subs } }, `sub:${index}`)
+   334→    },
+   335→    [canEdit, commit],
+   336→  )
+   337→
+   338→  const addSubtitle = useCallback(() => {
+   339→    if (!canEdit) return
+   340→    const d = docRef.current
+   341→    const cfg = ensureVideoConfig(d)
+   342→    const start = playheadRef.current
+   343→    commit({ ...d, config: { ...cfg, subtitles: [...(cfg.subtitles ?? []), { start, end: start + 2000, text: "Subtitle text" }] } })
+   344→  }, [canEdit, commit])
+   345→
+   346→  const deleteSubtitle = useCallback(
+   347→    (index: number) => {
+   348→      if (!canEdit) return
+   349→      const d = docRef.current
+   350→      const cfg = ensureVideoConfig(d)
+   351→      commit({ ...d, config: { ...cfg, subtitles: (cfg.subtitles ?? []).filter((_, i) => i !== index) } })
+   352→    },
+   353→    [canEdit, commit],
+   354→  )
+   355→
+   356→  const importSrt = useCallback(
+   357→    (text: string) => {
+   358→      if (!canEdit) return
+   359→      const entries = parseSrt(text)
+   360→      if (!entries.length) {
+   361→        toast({ title: "No subtitles found", description: "Expected SRT blocks like 00:00:01,000 --> 00:00:04,000 followed by text.", variant: "destructive" })
+   362→        return
+   363→      }
+   364→      const d = docRef.current
+   365→      const cfg = ensureVideoConfig(d)
+   366→      commit({ ...d, config: { ...cfg, subtitles: entries } })
+   367→      toast({ title: `Imported ${entries.length} subtitle${entries.length > 1 ? "s" : ""}` })
+   368→    },
+   369→    [canEdit, commit, toast],
+   370→  )
+   371→
+   372→  const downloadSrt = useCallback(() => {
+   373→    const cfg = ensureVideoConfig(docRef.current)
+   374→    const subs = cfg.subtitles ?? []
+   375→    if (!subs.length) return
+   376→    const blob = new Blob([formatSrt(subs)], { type: "text/plain" })
+   377→    const url = URL.createObjectURL(blob)
+   378→    const a = document.createElement("a")
+   379→    a.href = url
+   380→    a.download = `${project.name || "subtitles"}.srt`
+   381→    a.click()
+   382→    URL.revokeObjectURL(url)
+   383→  }, [project.name])
+   384→
+   385→  /* ---------------- media import / relink ---------------- */
+   386→
+   387→  const handleFiles = useCallback(
+   388→    async (files: FileList | null) => {
+   389→      if (!files || !files.length) return
+   390→      const relinkId = relinkTargetRef.current
+   391→      relinkTargetRef.current = null
+   392→
+   393→      if (relinkId) {
+   394→        const file = files[0]
+   395→        const kind = fileKindOf(file.type)
+   396→        if (!kind) {
+   397→          toast({ title: "Unsupported file type", description: file.name, variant: "destructive" })
+   398→          return
+   399→        }
+   400→        const src = URL.createObjectURL(file)
+   401→        const info = await probeMedia(src, kind)
+   402→        if (info.dead) {
+   403→          toast({ title: "That file could not be decoded", variant: "destructive" })
+   404→          return
+   405→        }
+   406→        const d = docRef.current
+   407→        const cfg = ensureVideoConfig(d)
+   408→        const clip = cfg.clips.find((c) => c.id === relinkId)
+   409→        if (!clip) return
+   410→        const sourceDur = kind === "image" ? Number.MAX_SAFE_INTEGER : info.duration || clip.duration
+   411→        const inPoint = Math.min(clip.inPoint, Math.max(0, sourceDur - 100))
+   412→        const duration = Math.min(clip.duration, Math.max(100, sourceDur - inPoint))
+   413→        commit(
+   414→          {
+   415→            ...d,
+   416→            config: { ...cfg, clips: cfg.clips.map((c) => (c.id === relinkId ? { ...c, src, inPoint, outPoint: inPoint + duration, duration } : c)) },
+   417→          },
+   418→          `relink:${relinkId}`,
+   419→        )
+   420→        toast({ title: "Media re-linked", description: file.name })
+   421→        return
+   422→      }
+   423→
+   424→      if (!canEdit) return
+   425→      setImporting(true)
+   426→      try {
+   427→        const d = docRef.current
+   428→        const cfg = ensureVideoConfig(d)
+   429→        const created: VideoClip[] = []
+   430→        for (const file of Array.from(files)) {
+   431→          const kind = fileKindOf(file.type)
+   432→          if (!kind) {
+   433→            toast({ title: `Skipped ${file.name}`, description: "Only video, audio and image files are supported.", variant: "destructive" })
+   434→            continue
+   435→          }
+   436→          const src = URL.createObjectURL(file)
+   437→          const info = await probeMedia(src, kind)
+   438→          if (info.dead) {
+   439→            toast({ title: `${file.name} could not be decoded`, variant: "destructive" })
+   440→            continue
+   441→          }
+   442→          const trackId = trackForKind(cfg, kind)
+   443→          const start = maxEndOnTrack(cfg.clips.filter((c) => c.trackId === trackId).concat(created), trackId)
+   444→          const duration = kind === "image" ? 4000 : clampMs(info.duration || 4000, 200, 10 * 60_000)
+   445→          created.push(
+   446→            createClip({
+   447→              trackId,
+   448→              kind,
+   449→              src,
+   450→              start,
+   451→              duration,
+   452→              outPoint: kind === "image" ? duration : Math.min(duration, Math.round(info.duration) || duration),
+   453→              name: file.name.replace(/\.[^.]+$/, "").slice(0, 40) || kind,
+   454→            }),
+   455→          )
+   456→        }
+   457→        if (created.length) {
+   458→          commit({ ...d, config: { ...cfg, clips: [...cfg.clips, ...created] } })
+   459→          toast({ title: `Imported ${created.length} file${created.length > 1 ? "s" : ""}`, description: "Media lives in this browser session." })
+   460→        }
+   461→      } finally {
+   462→        setImporting(false)
+   463→      }
+   464→    },
+   465→    [canEdit, commit, toast],
+   466→  )
+   467→
+   468→  const openPicker = useCallback((relinkClipId: string | null) => {
+   469→    relinkTargetRef.current = relinkClipId
+   470→    fileInputRef.current?.click()
+   471→  }, [])
+   472→
+   473→  /* ---------------- transport ---------------- */
+   474→
+   475→  const seek = useCallback((ms: number) => {
+   476→    playheadRef.current = Math.max(0, Math.round(ms))
+   477→    setPlayheadMs(playheadRef.current)
+   478→  }, [])
+   479→
+   480→  const onTimeUpdate = useCallback((ms: number) => setPlayheadMs(ms), [])
+   481→
+   482→  const handleEnded = useCallback(() => {
+   483→    setPlaying(false)
+   484→    setPlayheadMs(playheadRef.current)
+   485→  }, [])
+   486→
+   487→  const togglePlay = useCallback(() => {
+   488→    if (playing) {
+   489→      setPlaying(false)
+   490→      setPlayheadMs(playheadRef.current)
+   491→      return
+   492→    }
+   493→    const cfgTotal = totalDurationMs(ensureVideoConfig(docRef.current))
+   494→    if (cfgTotal <= 0) return
+   495→    if (playheadRef.current >= cfgTotal) playheadRef.current = 0
+   496→    const actx = pool.ensureAudioContext()
+   497→    if (actx && actx.state === "suspended") void actx.resume().catch(() => {})
+   498→    setPlayheadMs(playheadRef.current)
+   499→    setPlaying(true)
+   500→  }, [playing, pool])
+   501→
+   502→  const stopPlayback = useCallback(() => {
+   503→    setPlaying(false)
+   504→    playheadRef.current = 0
+   505→    setPlayheadMs(0)
+   506→  }, [])
+   507→
+   508→  /* ---------------- keyboard ---------------- */
+   509→
+   510→  useEffect(() => {
+   511→    function isTextEntry(el: EventTarget | null): boolean {
+   512→      const t = el as HTMLElement | null
+   513→      return !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)
+   514→    }
+   515→    const onKey = (e: KeyboardEvent) => {
+   516→      if (e.code === "Space" && !isTextEntry(e.target)) {
+   517→        e.preventDefault()
+   518→        togglePlay()
+   519→        return
+   520→      }
+   521→      if (isTextEntry(e.target)) return
+   522→      const meta = e.ctrlKey || e.metaKey
+   523→      if (meta && e.key.toLowerCase() === "z") {
+   524→        e.preventDefault()
+   525→        if (e.shiftKey) redo()
+   526→        else undo()
+   527→      } else if (meta && e.key.toLowerCase() === "y") {
+   528→        e.preventDefault()
+   529→        redo()
+   530→      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId && canEdit) {
+   531→        e.preventDefault()
+   532→        deleteSelected()
+   533→      }
+   534→    }
+   535→    window.addEventListener("keydown", onKey)
+   536→    return () => window.removeEventListener("keydown", onKey)
+   537→  }, [canEdit, deleteSelected, redo, selectedId, togglePlay, undo])
+   538→
+   539→  /* ---------------- editor handle (export / thumbnail) ---------------- */
+   540→
+   541→  useEffect(() => {
+   542→    const handle: EditorHandle = {
+   543→      export: async (req): Promise<ExportResult[]> => {
+   544→        const base = req.filenameBase || "video"
+   545→        const d = docRef.current
+   546→        if (req.format === "json") {
+   547→          return [{ filename: `${base}.studio.json`, blob: new Blob([JSON.stringify(d, null, 2)], { type: "application/json" }) }]
+   548→        }
+   549→        if (req.format === "png") {
+   550→          const cfg = ensureVideoConfig(d)
+   551→          const blob = await exportCurrentFramePng(cfg, pool, playheadRef.current)
+   552→          return [{ filename: `${base}.png`, blob, note: "Current frame at full canvas size." }]
+   553→        }
+   554→        if (req.format === "webm" || req.format === "mp4") {
+   555→          if (req.format === "mp4" && !(typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported("video/mp4"))) {
+   556→            throw new Error("MP4 recording isn't supported by this browser. WebM export is available in the same menu and plays in Chrome, Edge and Firefox.")
+   557→          }
+   558→          const mime = pickVideoMime(req.format)
+   559→          if (!mime) throw new Error("This browser can't record video (MediaRecorder unavailable). Try Chrome, Edge or Firefox.")
+   560→          exportingRef.current = true
+   561→          setPlaying(false)
+   562→          seek(0)
+   563→          pool.pauseAll()
+   564→          cancelExportRef.current = false
+   565→          setExporting({ active: true, progress: 0 })
+   566→          try {
+   567→            const cfg = ensureVideoConfig(d)
+   568→            const { blob, note } = await recordTimeline({
+   569→              config: cfg,
+   570→              pool,
+   571→              mimeType: mime,
+   572→              onProgress: (p) => setExporting({ active: true, progress: p }),
+   573→              isCancelled: () => cancelExportRef.current,
+   574→            })
+   575→            if (!blob) return []
+   576→            return [
+   577→              {
+   578→                filename: `${base}.${req.format}`,
+   579→                blob,
+   580→                note: note ?? `Realtime render — export took about ${fmtClock(totalDurationMs(cfg))} (one pass over the timeline).`,
+   581→              },
+   582→            ]
+   583→          } finally {
+   584→            exportingRef.current = false
+   585→            setExporting({ active: false, progress: 0 })
+   586→          }
+   587→        }
+   588→        throw new Error(`"${req.format}" isn't available for video projects — use WebM, MP4, PNG or JSON.`)
+   589→      },
+   590→      getThumbnail: async () => {
+   591→        try {
+   592→          return await renderThumbnail(ensureVideoConfig(docRef.current), pool, playheadRef.current)
+   593→        } catch {
+   594→          return null
+   595→        }
+   596→      },
+   597→      isDirty: () => dirtyRef.current,
+   598→    }
+   599→    registerHandle(handle)
+   600→    return () => registerHandle(null)
+   601→  }, [registerHandle, pool, seek])
+   602→
+   603→  /* ---------------- render ---------------- */
+   604→
+   605→  const canvasPresetValue = useMemo(() => {
+   606→    const match = ASPECT_PRESETS.find((p) => p.width === config.canvas.width && p.height === config.canvas.height)
+   607→    return match ? match.id : "custom"
+   608→  }, [config.canvas.width, config.canvas.height])
+   609→
+   610→  return (
+   611→    <div className="flex h-full min-h-0 flex-col bg-muted/30">
+   612→      {/* top toolbar */}
+   613→      <div className="flex flex-wrap items-center gap-1.5 border-b bg-card px-2 py-1.5">
+   614→        <Button size="sm" variant="outline" className="h-8 gap-1.5" disabled={!canEdit || importing} onClick={() => openPicker(null)}>
+   615→          {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+   616→          Import media
+   617→        </Button>
+   618→        <Button size="sm" variant="outline" className="h-8 gap-1.5" disabled={!canEdit} onClick={() => addTextClip("text")}>
+   619→          <TypeIcon className="h-3.5 w-3.5" /> Text
+   620→        </Button>
+   621→        <div className="flex items-center gap-1.5">
+   622→          <MonitorPlay className="h-3.5 w-3.5 text-muted-foreground" />
+   623→          <Select value={canvasPresetValue} disabled={!canEdit} onValueChange={applyAspect}>
+   624→            <SelectTrigger className="h-8 w-[130px] text-xs" aria-label="Canvas aspect ratio">
+   625→              <SelectValue placeholder="Aspect" />
+   626→            </SelectTrigger>
+   627→            <SelectContent>
+   628→              {ASPECT_PRESETS.map((p) => (
+   629→                <SelectItem key={p.id} value={p.id}>
+   630→                  {p.label} · {p.width}×{p.height}
+   631→                </SelectItem>
+   632→              ))}
+   633→              {canvasPresetValue === "custom" && (
+   634→                <SelectItem value="custom">
+   635→                  {config.canvas.width}×{config.canvas.height}
+   636→                </SelectItem>
+   637→              )}
+   638→            </SelectContent>
+   639→          </Select>
+   640→        </div>
+   641→        <div className="ml-auto flex items-center gap-1">
+   642→          <span className="mr-1 hidden items-center gap-1 text-[11px] text-muted-foreground sm:flex">
+   643→            <Clock className="h-3 w-3" /> {fmtClock(total)}
+   644→          </span>
+   645→          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={undo} disabled={!historyState.canUndo} aria-label="Undo" title="Undo (Ctrl+Z)">
+   646→            <Undo2 className="h-4 w-4" />
+   647→          </Button>
+   648→          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={redo} disabled={!historyState.canRedo} aria-label="Redo" title="Redo (Ctrl+Y)">
+   649→            <Redo2 className="h-4 w-4" />
+   650→          </Button>
+   651→        </div>
+   652→      </div>
+   653→
+   654→      {/* session media notice */}
+   655→      {hasMedia && (
+   656→        <div className="flex items-center gap-1.5 border-b bg-amber-500/10 px-3 py-1 text-[11px] text-amber-900 dark:text-amber-200">
+   657→          <Info className="h-3 w-3 shrink-0" />
+   658→          <span>
+   659→            Media files live in this browser session; re-link after reload.
+   660→            {deadCount > 0 && ` ${deadCount} clip${deadCount > 1 ? "s" : ""} need${deadCount === 1 ? "s" : ""} relinking.`}
+   661→          </span>
+   662→        </div>
+   663→      )}
+   664→
+   665→      <input
+   666→        ref={fileInputRef}
+   667→        type="file"
+   668→        multiple
+   669→        accept="video/*,audio/*,image/*"
+   670→        className="hidden"
+   671→        aria-hidden
+   672→        onChange={(e) => {
+   673→          void handleFiles(e.target.files)
+   674→          e.target.value = ""
+   675→        }}
+   676→      />
+   677→
+   678→      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+   679→        {/* preview */}
+   680→        <div className="relative flex min-h-[260px] min-w-0 flex-1 flex-col lg:flex-[1.5]">
+   681→          <PreviewPlayer
+   682→            config={config}
+   683→            playing={playing}
+   684→            suspended={exporting.active}
+   685→            playheadRef={playheadRef}
+   686→            playheadMs={playheadMs}
+   687→            pool={pool}
+   688→            deadCount={deadCount}
+   689→            onTogglePlay={togglePlay}
+   690→            onStop={stopPlayback}
+   691→            onEnded={handleEnded}
+   692→            onTimeUpdate={onTimeUpdate}
+   693→          />
+   694→          {exporting.active && (
+   695→            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-background/85 p-6 backdrop-blur-sm">
+   696→              <Film className="h-5 w-5 animate-pulse text-primary" />
+   697→              <p className="text-sm font-semibold">Rendering video in real time…</p>
+   698→              <Progress value={Math.round(exporting.progress * 100)} className="w-64" />
+   699→              <p className="text-center text-xs text-muted-foreground">
+   700→                {Math.round(exporting.progress * 100)}% · keep this tab visible until it finishes
+   701→              </p>
+   702→              <Button
+   703→                variant="outline"
+   704→                size="sm"
+   705→                onClick={() => {
+   706→                  cancelExportRef.current = true
+   707→                }}
+   708→              >
+   709→                Cancel export
+   710→              </Button>
+   711→            </div>
+   712→          )}
+   713→        </div>
+   714→
+   715→        {/* properties */}
+   716→        <div className={cn("flex min-h-0 w-full shrink-0 flex-col border-t bg-card lg:w-80 lg:border-l lg:border-t-0")}>
+   717→          <PropertiesPanel
+   718→            config={config}
+   719→            selected={selected}
+   720→            canEdit={canEdit}
+   721→            playheadMs={playheadMs}
+   722→            onPatchClip={patchClip}
+   723→            onAddText={() => addTextClip("text")}
+   724→            onAddSticker={(char) => addTextClip("sticker", char)}
+   725→            onAddSubtitle={addSubtitle}
+   726→            onPatchSubtitle={patchSubtitle}
+   727→            onDeleteSubtitle={deleteSubtitle}
+   728→            onImportSrt={importSrt}
+   729→            onDownloadSrt={downloadSrt}
+   730→            isDead={(clipId) => deadSet.has(clipId)}
+   731→            onRelink={(clipId) => openPicker(clipId)}
+   732→            onDeleteClip={deleteClipById}
+   733→          />
+   734→        </div>
+   735→      </div>
+   736→
+   737→      {/* timeline */}
+   738→      <Timeline
+   739→        config={config}
+   740→        total={total}
+   741→        zoom={zoom}
+   742→        onZoomChange={setZoom}
+   743→        playheadMs={playheadMs}
+   744→        onScrub={seek}
+   745→        selectedId={selectedId}
+   746→        onSelect={setSelectedId}
+   747→        canEdit={canEdit}
+   748→        onPatchClip={patchClip}
+   749→        onPatchTrack={patchTrack}
+   750→        onSplit={splitAtPlayhead}
+   751→        onDuplicate={duplicateSelected}
+   752→        onDelete={deleteSelected}
+   753→        deadIds={deadSet}
+   754→        onRelink={(clipId) => openPicker(clipId)}
+   755→        getSourceDuration={(clipId) => pool.sourceDurations.get(clipId)}
+   756→      />
+   757→    </div>
+   758→  )
+   759→})
+   760→
+   761→export default VideoEditor
+   762→

@@ -3,7 +3,8 @@
  * -------------------------------
  * Lazy DesignDoc fetching for gallery cards, layered for speed:
  *
- *  1. in-memory Map cache (per session, instant)
+ *  1. in-memory LRU cache, capped at 80 parsed docs (per session, instant;
+ *     evicted entries fall back to the IndexedDB layer below)
  *  2. in-flight promise dedupe (many cards for the same template share one fetch)
  *  3. IndexedDB cache via idb-keyval (own "studio-previews" db; templates are
  *     immutable CC0 content, so entries never need invalidation)
@@ -14,6 +15,7 @@
  */
 import { createStore, get, set } from "idb-keyval"
 import { api } from "@/lib/studio/api-client"
+import { LruMap } from "@/lib/studio/lru"
 import type { DesignDoc } from "@/lib/design/types"
 
 /* --------------------------- concurrency limiter --------------------------- */
@@ -60,10 +62,13 @@ export function createLimiter(concurrency: number): Limiter {
 
 /* ------------------------------ doc fetching ------------------------------ */
 
+/** In-memory doc cache is LRU-capped (parsed DesignDocs are large object trees). */
+const MEM_CACHE_CAP = 80
+
 const docStore = createStore("studio-previews", "tpl-docs")
 const docStoreGet = <T,>(key: string): Promise<T | undefined> => get<T>(key, docStore)
 const docStoreSet = (key: string, value: unknown): Promise<void> => set(key, value, docStore)
-const memCache = new Map<string, DesignDoc>()
+const memCache = new LruMap<string, DesignDoc>(MEM_CACHE_CAP)
 const inflight = new Map<string, Promise<DesignDoc | null>>()
 const limiter = createLimiter(4)
 

@@ -1,0 +1,991 @@
+     1→/**
+     2→ * Headless export engine.
+     3→ * Renders DesignDoc pages to canvas / SVG without touching the interactive
+     4→ * Konva stage, so exports are consistent for every page and work even when
+     5→ * the stage is not mounted. Heavy deps (jspdf / jszip / qrcode) are
+     6→ * dynamically imported inside the functions that need them.
+     7→ */
+     8→
+     9→import type { ExportRequest, ExportResult } from "@/components/studio/editors/types"
+    10→import type { BackgroundSpec, DesignDoc, DesignElement, ImageElement, PageModel, ShapeElement, TableElement, TextElement, StickyElement, FrameElement, QrElement, ChartElement, FreehandElement, ConnectorElement, IconElement } from "@/lib/design/types"
+    11→import { ICON_LIBRARY, iconToSvg } from "@/lib/design/icons"
+    12→import {
+    13→  arrowHeadPoints,
+    14→  fontString,
+    15→  gradientEndpoints,
+    16→  lineGeometry,
+    17→  roundedRectPath,
+    18→  shapePathData,
+    19→  textVisualLines,
+    20→} from "./geometry"
+    21→import { layoutChart } from "./charts"
+    22→
+    23→/* ------------------------------ image loading ------------------------------ */
+    24→
+    25→const imageCache = new Map<string, Promise<HTMLImageElement | null>>()
+    26→
+    27→export function loadImage(src: string): Promise<HTMLImageElement | null> {
+    28→  const hit = imageCache.get(src)
+    29→  if (hit) return hit
+    30→  const p = new Promise<HTMLImageElement | null>((resolve) => {
+    31→    const img = new Image()
+    32→    if (!src.startsWith("data:")) img.crossOrigin = "anonymous"
+    33→    img.onload = () => resolve(img)
+    34→    img.onerror = () => resolve(null)
+    35→    img.src = src
+    36→  })
+    37→  imageCache.set(src, p)
+    38→  return p
+    39→}
+    40→
+    41→/** Convert a remote URL to a data URL (best effort, for SVG embedding). */
+    42→async function toDataUrl(src: string): Promise<string | null> {
+    43→  if (src.startsWith("data:")) return src
+    44→  try {
+    45→    const res = await fetch(src, { mode: "cors" })
+    46→    if (!res.ok) return null
+    47→    const blob = await res.blob()
+    48→    return await new Promise<string | null>((resolve) => {
+    49→      const fr = new FileReader()
+    50→      fr.onload = () => resolve(typeof fr.result === "string" ? fr.result : null)
+    51→      fr.onerror = () => resolve(null)
+    52→      fr.readAsDataURL(blob)
+    53→    })
+    54→  } catch {
+    55→    return null
+    56→  }
+    57→}
+    58→
+    59→/* ------------------------------ QR generation ------------------------------ */
+    60→
+    61→let qrPromise: Promise<typeof import("qrcode")> | null = null
+    62→const qrCache = new Map<string, Promise<string>>()
+    63→
+    64→/** QR code as PNG data URL. `qrcode` is dynamically imported to keep bundles lean. */
+    65→export function qrDataUrl(data: string, fg = "#111827", bg = "#ffffff", width = 512): Promise<string> {
+    66→  const key = `${data}|${fg}|${bg}|${width}`
+    67→  const hit = qrCache.get(key)
+    68→  if (hit) return hit
+    69→  if (!qrPromise) qrPromise = import("qrcode")
+    70→  const p = qrPromise.then((QR) =>
+    71→    QR.toDataURL(data || " ", {
+    72→      width,
+    73→      margin: 1,
+    74→      errorCorrectionLevel: "M",
+    75→      color: { dark: fg, light: bg },
+    76→    }),
+    77→  )
+    78→  qrCache.set(key, p)
+    79→  return p
+    80→}
+    81→
+    82→/* ------------------------------ filters ------------------------------ */
+    83→
+    84→export function filtersToCss(el: ImageElement): string {
+    85→  const f = el.filters
+    86→  if (!f) return "none"
+    87→  const parts: string[] = []
+    88→  if (f.brightness !== 100) parts.push(`brightness(${f.brightness}%)`)
+    89→  if (f.contrast !== 100) parts.push(`contrast(${f.contrast}%)`)
+    90→  if (f.saturation !== 100) parts.push(`saturate(${f.saturation}%)`)
+    91→  if (f.hue) parts.push(`hue-rotate(${f.hue}deg)`)
+    92→  if (f.blur) parts.push(`blur(${f.blur}px)`)
+    93→  if (f.grayscale) parts.push(`grayscale(${f.grayscale}%)`)
+    94→  if (f.sepia) parts.push(`sepia(${f.sepia}%)`)
+    95→  if (f.invert) parts.push(`invert(${f.invert}%)`)
+    96→  return parts.length > 0 ? parts.join(" ") : "none"
+    97→}
+    98→
+    99→function roundRectOn(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+   100→  const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2))
+   101→  ctx.beginPath()
+   102→  if (rr <= 0.01) {
+   103→    ctx.rect(x, y, w, h)
+   104→    return
+   105→  }
+   106→  ctx.moveTo(x + rr, y)
+   107→  ctx.arcTo(x + w, y, x + w, y + h, rr)
+   108→  ctx.arcTo(x + w, y + h, x, y + h, rr)
+   109→  ctx.arcTo(x, y + h, x, y, rr)
+   110→  ctx.arcTo(x, y, x + w, y, rr)
+   111→  ctx.closePath()
+   112→}
+   113→
+   114→/* ------------------------------ page renderer ------------------------------ */
+   115→
+   116→export interface RenderOpts {
+   117→  scale?: number
+   118→  /** skip background (transparent export) */
+   119→  transparent?: boolean
+   120→  /** cap the largest side in px (thumbnails) */
+   121→  maxSide?: number
+   122→}
+   123→
+   124→function paintBackground(ctx: CanvasRenderingContext2D, bg: BackgroundSpec, w: number, h: number): void {
+   125→  if (bg.type === "solid" && bg.color) {
+   126→    ctx.fillStyle = bg.color
+   127→    ctx.fillRect(0, 0, w, h)
+   128→  } else if (bg.type === "gradient" && bg.gradient) {
+   129→    const { from, to, angle } = bg.gradient
+   130→    const ep = gradientEndpoints(angle, w, h)
+   131→    const grad = ctx.createLinearGradient(ep.x0, ep.y0, ep.x1, ep.y1)
+   132→    grad.addColorStop(0, from)
+   133→    grad.addColorStop(1, to)
+   134→    ctx.fillStyle = grad
+   135→    ctx.fillRect(0, 0, w, h)
+   136→  } else if (bg.type === "image" && bg.imageUrl) {
+   137→    ctx.fillStyle = "#ffffff"
+   138→    ctx.fillRect(0, 0, w, h)
+   139→  }
+   140→}
+   141→
+   142→async function drawElement(ctx: CanvasRenderingContext2D, el: DesignElement): Promise<void> {
+   143→  if (el.hidden || el.type === "group") return
+   144→  ctx.save()
+   145→  ctx.globalAlpha = Math.max(0, Math.min(1, el.opacity))
+   146→  ctx.translate(el.x, el.y)
+   147→  if (el.rotation) {
+   148→    ctx.translate(el.width / 2, el.height / 2)
+   149→    ctx.rotate((el.rotation * Math.PI) / 180)
+   150→    ctx.translate(-el.width / 2, -el.height / 2)
+   151→  }
+   152→
+   153→  switch (el.type) {
+   154→    case "shape":
+   155→      drawShape(ctx, el)
+   156→      break
+   157→    case "text":
+   158→      drawText(ctx, el)
+   159→      break
+   160→    case "image":
+   161→      await drawImageEl(ctx, el)
+   162→      break
+   163→    case "icon":
+   164→      drawIcon(ctx, el)
+   165→      break
+   166→    case "chart":
+   167→      drawChart(ctx, el)
+   168→      break
+   169→    case "table":
+   170→      drawTable(ctx, el)
+   171→      break
+   172→    case "qr":
+   173→      await drawQr(ctx, el)
+   174→      break
+   175→    case "frame":
+   176→      drawFrame(ctx, el)
+   177→      break
+   178→    case "sticky":
+   179→      drawSticky(ctx, el)
+   180→      break
+   181→    case "freehand":
+   182→      drawFreehand(ctx, el)
+   183→      break
+   184→    case "connector":
+   185→      drawConnector(ctx, el)
+   186→      break
+   187→    case "media":
+   188→      drawMediaPlaceholder(ctx, el)
+   189→      break
+   190→    default:
+   191→      drawPlaceholder(ctx, (el as { width: number }).width, (el as { height: number }).height)
+   192→  }
+   193→  ctx.restore()
+   194→}
+   195→
+   196→function drawShape(ctx: CanvasRenderingContext2D, el: ShapeElement): void {
+   197→  if (el.variant === "line" || el.variant === "arrow") {
+   198→    const { x1, y1, x2, y2 } = lineGeometry(el.width, el.height)
+   199→    ctx.strokeStyle = el.fill === "transparent" ? el.stroke : el.fill
+   200→    ctx.lineWidth = Math.max(1, el.strokeWidth || 3)
+   201→    ctx.lineCap = "round"
+   202→    ctx.setLineDash(el.dash ?? [])
+   203→    ctx.beginPath()
+   204→    ctx.moveTo(x1, y1)
+   205→    ctx.lineTo(x2, y2)
+   206→    ctx.stroke()
+   207→    ctx.setLineDash([])
+   208→    if (el.variant === "arrow" && el.arrowHead !== "none") {
+   209→      ctx.fillStyle = ctx.strokeStyle as string
+   210→      ctx.beginPath()
+   211→      const head = arrowHeadPoints(x1, y1, x2, y2, Math.max(10, ctx.lineWidth * 3.4))
+   212→      ctx.moveTo(head[0].x, head[0].y)
+   213→      ctx.lineTo(head[1].x, head[1].y)
+   214→      ctx.lineTo(head[2].x, head[2].y)
+   215→      ctx.closePath()
+   216→      ctx.fill()
+   217→    }
+   218→    return
+   219→  }
+   220→  const d = shapePathData(el.variant, el.width, el.height, el.cornerRadius)
+   221→  const path = new Path2D(d)
+   222→  if (el.fill && el.fill !== "transparent") {
+   223→    ctx.fillStyle = el.fill
+   224→    ctx.fill(path)
+   225→  }
+   226→  if (el.stroke && el.stroke !== "transparent" && el.strokeWidth > 0) {
+   227→    ctx.strokeStyle = el.stroke
+   228→    ctx.lineWidth = el.strokeWidth
+   229→    ctx.lineJoin = "round"
+   230→    ctx.setLineDash(el.dash ?? [])
+   231→    ctx.stroke(path)
+   232→    ctx.setLineDash([])
+   233→  }
+   234→  if (el.shadow && el.shadow.blur > 0) {
+   235→    // shadow pass beneath (simple approximation: redraw filled path with shadow, then content)
+   236→    ctx.save()
+   237→    ctx.globalAlpha *= 0.5
+   238→    ctx.shadowColor = el.shadow.color
+   239→    ctx.shadowBlur = el.shadow.blur
+   240→    ctx.shadowOffsetX = el.shadow.offsetX
+   241→    ctx.shadowOffsetY = el.shadow.offsetY
+   242→    ctx.fillStyle = "rgba(0,0,0,1)"
+   243→    ctx.fill(path)
+   244→    ctx.restore()
+   245→  }
+   246→}
+   247→
+   248→interface TextDrawProps extends TextElement {
+   249→  width: number
+   250→  height: number
+   251→}
+   252→
+   253→function drawText(ctx: CanvasRenderingContext2D, el: TextDrawProps): void {
+   254→  const pad = 2
+   255→  const text = el.uppercase ? el.text.toUpperCase() : el.text
+   256→  const lines = textVisualLines(
+   257→    {
+   258→      text: el.text,
+   259→      fontFamily: el.fontFamily,
+   260→      fontSize: el.fontSize,
+   261→      fontWeight: el.fontWeight,
+   262→      italic: el.italic,
+   263→      uppercase: el.uppercase,
+   264→      lineHeight: el.lineHeight,
+   265→      letterSpacing: el.letterSpacing,
+   266→      listStyle: el.listStyle,
+   267→    },
+   268→    el.width,
+   269→    pad,
+   270→  )
+   271→  const lh = el.fontSize * el.lineHeight
+   272→  const blockH = lines.length * lh
+   273→  let offsetY = 0
+   274→  if (el.vAlign === "middle") offsetY = Math.max(0, (el.height - blockH) / 2)
+   275→  else if (el.vAlign === "bottom") offsetY = Math.max(0, el.height - blockH)
+   276→
+   277→  const align: "left" | "center" | "right" = el.align
+   278→  ctx.font = fontString(el.fontFamily, el.fontSize, el.fontWeight, el.italic)
+   279→  const ctx2 = ctx as CanvasRenderingContext2D & { letterSpacing?: string }
+   280→  if (el.letterSpacing) ctx2.letterSpacing = `${el.letterSpacing}px`
+   281→  ctx.textBaseline = "alphabetic"
+   282→  ctx.textAlign = align === "center" ? "center" : align === "right" ? "right" : "left"
+   283→
+   284→  if (el.bgColor) {
+   285→    ctx.fillStyle = el.bgColor
+   286→    roundRectOn(ctx, 0, 0, el.width, Math.max(el.height, blockH), Math.min(8, el.fontSize / 3))
+   287→    ctx.fill()
+   288→  }
+   289→
+   290→  const indent = el.listStyle && el.listStyle !== "none" ? el.fontSize * 0.9 : 0
+   291→  let numberCounter = 1
+   292→  let prevWasListStart = false
+   293→  lines.forEach((line, i) => {
+   294→    const baseY = offsetY + i * lh + el.fontSize * 0.82 + pad
+   295→    let prefix = ""
+   296→    let extraIndent = 0
+   297→    if (el.listStyle === "bullet") {
+   298→      const isStart = line !== "" && !prevWasListStart
+   299→      prefix = isStart ? "•  " : ""
+   300→      extraIndent = prefix === "" ? indent : 0
+   301→      prevWasListStart = line === "" ? false : isStart ? true : prevWasListStart
+   302→    } else if (el.listStyle === "number") {
+   303→      const isStart = line !== "" && !prevWasListStart
+   304→      prefix = isStart ? `${numberCounter}.  ` : ""
+   305→      if (isStart) numberCounter += 1
+   306→      extraIndent = prefix === "" ? indent : 0
+   307→      prevWasListStart = line === "" ? false : isStart ? true : prevWasListStart
+   308→    }
+   309→    const drawX = (align === "center" ? el.width / 2 : align === "right" ? el.width : 0) + (align === "left" ? indent - extraIndent : 0)
+   310→    const lineText = `${prefix}${line}`
+   311→    if (lineText.trim() !== "" || prefix !== "") {
+   312→      if (el.shadow && el.shadow.blur >= 0) {
+   313→        ctx.save()
+   314→        ctx.shadowColor = el.shadow.color
+   315→        ctx.shadowBlur = el.shadow.blur
+   316→        ctx.shadowOffsetX = el.shadow.offsetX
+   317→        ctx.shadowOffsetY = el.shadow.offsetY
+   318→        ctx.fillStyle = el.color
+   319→        ctx.fillText(lineText, drawX, baseY)
+   320→        ctx.restore()
+   321→      } else {
+   322→        ctx.fillStyle = el.color
+   323→        ctx.fillText(lineText, drawX, baseY)
+   324→      }
+   325→      if (el.stroke && el.stroke.width > 0 && el.stroke.color !== "transparent") {
+   326→        ctx.strokeStyle = el.stroke.color
+   327→        ctx.lineWidth = el.stroke.width
+   328→        ctx.strokeText(lineText, drawX, baseY)
+   329→      }
+   330→    }
+   331→    // underline / strike
+   332→    if ((el.underline || el.strike) && line.trim() !== "") {
+   333→      const w = ctx.measureText(lineText).width
+   334→      const x0 = el.align === "center" ? el.width / 2 - w / 2 : el.align === "right" ? el.width - w : drawX
+   335→      ctx.strokeStyle = el.color
+   336→      ctx.lineWidth = Math.max(1, el.fontSize / 16)
+   337→      ctx.beginPath()
+   338→      if (el.strike) {
+   339→        ctx.moveTo(x0, baseY - el.fontSize * 0.3)
+   340→        ctx.lineTo(x0 + w, baseY - el.fontSize * 0.3)
+   341→      } else {
+   342→        ctx.moveTo(x0, baseY + el.fontSize * 0.12)
+   343→        ctx.lineTo(x0 + w, baseY + el.fontSize * 0.12)
+   344→      }
+   345→      ctx.stroke()
+   346→    }
+   347→  })
+   348→  if (el.letterSpacing) ctx2.letterSpacing = "0px"
+   349→}
+   350→
+   351→async function drawImageEl(ctx: CanvasRenderingContext2D, el: ImageElement): Promise<void> {
+   352→  const img = await loadImage(el.src)
+   353→  if (!img) {
+   354→    drawPlaceholder(ctx, el.width, el.height)
+   355→    return
+   356→  }
+   357→  ctx.save()
+   358→  roundRectOn(ctx, 0, 0, el.width, el.height, el.cornerRadius)
+   359→  ctx.clip()
+   360→  if (el.flipH || el.flipV) {
+   361→    ctx.translate(el.flipH ? el.width : 0, el.flipV ? el.height : 0)
+   362→    ctx.scale(el.flipH ? -1 : 1, el.flipV ? -1 : 1)
+   363→  }
+   364→  const cssFilter = filtersToCss(el)
+   365→  if (cssFilter !== "none") ctx.filter = cssFilter
+   366→  const crop = el.crop ?? { x: 0, y: 0, width: 1, height: 1 }
+   367→  const sx = crop.x * img.naturalWidth
+   368→  const sy = crop.y * img.naturalHeight
+   369→  const sw = Math.max(1, crop.width * img.naturalWidth)
+   370→  const sh = Math.max(1, crop.height * img.naturalHeight)
+   371→  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, el.width, el.height)
+   372→  ctx.filter = "none"
+   373→  const vig = el.filters?.vignette ?? 0
+   374→  if (vig > 0) {
+   375→    const grad = ctx.createRadialGradient(el.width / 2, el.height / 2, Math.min(el.width, el.height) * 0.35, el.width / 2, el.height / 2, Math.max(el.width, el.height) * 0.72)
+   376→    grad.addColorStop(0, "rgba(0,0,0,0)")
+   377→    grad.addColorStop(1, `rgba(0,0,0,${(vig / 100) * 0.85})`)
+   378→    ctx.fillStyle = grad
+   379→    ctx.fillRect(0, 0, el.width, el.height)
+   380→  }
+   381→  ctx.restore()
+   382→}
+   383→
+   384→function drawIcon(ctx: CanvasRenderingContext2D, el: IconElement): void {
+   385→  const def = ICON_LIBRARY[el.icon]
+   386→  if (!def) {
+   387→    drawPlaceholder(ctx, el.width, el.height)
+   388→    return
+   389→  }
+   390→  ctx.scale(el.width / 24, el.height / 24)
+   391→  ctx.strokeStyle = el.color
+   392→  ctx.lineWidth = 2
+   393→  ctx.lineCap = "round"
+   394→  ctx.lineJoin = "round"
+   395→  for (const d of def.paths) {
+   396→    ctx.stroke(new Path2D(d))
+   397→  }
+   398→}
+   399→
+   400→function drawChart(ctx: CanvasRenderingContext2D, el: ChartElement): void {
+   401→  for (const p of layoutChart(el)) {
+   402→    if (p.kind === "rect") {
+   403→      if (p.fill) {
+   404→        ctx.fillStyle = p.fill
+   405→        if (p.cornerRadius) {
+   406→          roundRectOn(ctx, p.x, p.y, p.width, p.height, p.cornerRadius)
+   407→          ctx.fill()
+   408→        } else ctx.fillRect(p.x, p.y, p.width, p.height)
+   409→      }
+   410→    } else if (p.kind === "path") {
+   411→      const path = new Path2D(p.d)
+   412→      if (p.fill) {
+   413→        ctx.fillStyle = p.fill
+   414→        ctx.fill(path)
+   415→      }
+   416→      if (p.stroke) {
+   417→        ctx.strokeStyle = p.stroke
+   418→        ctx.lineWidth = p.strokeWidth ?? 1
+   419→        ctx.stroke(path)
+   420→      }
+   421→    } else if (p.kind === "polyline") {
+   422→      ctx.strokeStyle = p.stroke
+   423→      ctx.lineWidth = p.strokeWidth
+   424→      ctx.lineJoin = "round"
+   425→      ctx.lineCap = "round"
+   426→      ctx.beginPath()
+   427→      for (let i = 0; i < p.points.length; i += 2) {
+   428→        if (i === 0) ctx.moveTo(p.points[0], p.points[1])
+   429→        else ctx.lineTo(p.points[i], p.points[i + 1])
+   430→      }
+   431→      ctx.stroke()
+   432→    } else if (p.kind === "text") {
+   433→      ctx.font = fontString("Inter", p.size, p.weight ?? 400)
+   434→      ctx.fillStyle = p.color
+   435→      ctx.textAlign = p.align
+   436→      ctx.textBaseline = "alphabetic"
+   437→      ctx.fillText(p.text, p.x, p.y)
+   438→    } else if (p.kind === "hline") {
+   439→      ctx.strokeStyle = p.stroke
+   440→      ctx.lineWidth = 1
+   441→      ctx.setLineDash(p.dash ?? [])
+   442→      ctx.beginPath()
+   443→      ctx.moveTo(p.x1, p.y)
+   444→      ctx.lineTo(p.x2, p.y)
+   445→      ctx.stroke()
+   446→      ctx.setLineDash([])
+   447→    }
+   448→  }
+   449→}
+   450→
+   451→function drawTable(ctx: CanvasRenderingContext2D, el: TableElement): void {
+   452→  const rows = el.rows
+   453→  if (rows.length === 0) return
+   454→  const cols = Math.max(...rows.map((r) => r.length))
+   455→  const colW = el.width / cols
+   456→  const rowH = el.height / rows.length
+   457→  ctx.font = fontString(el.fontFamily, el.fontSize, el.headerRow ? 600 : 400)
+   458→  rows.forEach((row, ri) => {
+   459→    row.forEach((cell, ci) => {
+   460→      const x = ci * colW
+   461→      const y = ri * rowH
+   462→      let bg = el.rowBg
+   463→      if (el.headerRow && ri === 0) bg = el.headerBg
+   464→      else if (ri % 2 === 1) bg = el.altRowBg
+   465→      ctx.fillStyle = bg
+   466→      ctx.fillRect(x, y, colW, rowH)
+   467→      ctx.strokeStyle = el.borderColor
+   468→      ctx.lineWidth = 1
+   469→      ctx.strokeRect(x + 0.5, y + 0.5, colW - 1, rowH - 1)
+   470→      ctx.fillStyle = el.headerRow && ri === 0 ? el.headerColor : el.color
+   471→      ctx.textAlign = "left"
+   472→      ctx.textBaseline = "middle"
+   473→      const maxW = colW - 16
+   474→      let text = cell ?? ""
+   475→      while (text.length > 1 && ctx.measureText(text).width > maxW) text = text.slice(0, -2) + "…"
+   476→      ctx.fillText(text, x + 8, y + rowH / 2 + 1, maxW)
+   477→    })
+   478→  })
+   479→}
+   480→
+   481→async function drawQr(ctx: CanvasRenderingContext2D, el: QrElement): Promise<void> {
+   482→  try {
+   483→    const url = await qrDataUrl(el.data, el.fg, el.bg)
+   484→    const img = await loadImage(url)
+   485→    if (img) {
+   486→      ctx.drawImage(img, 0, 0, el.width, el.height)
+   487→      return
+   488→    }
+   489→  } catch {
+   490→    /* fall through to placeholder */
+   491→  }
+   492→  drawPlaceholder(ctx, el.width, el.height)
+   493→}
+   494→
+   495→function drawFrame(ctx: CanvasRenderingContext2D, el: FrameElement): void {
+   496→  const path = new Path2D(roundedRectPath(el.width, el.height, el.cornerRadius))
+   497→  if (el.fill && el.fill !== "transparent") {
+   498→    ctx.fillStyle = el.fill
+   499→    ctx.fill(path)
+   500→  }
+   501→  if (el.stroke && el.stroke !== "transparent" && el.strokeWidth > 0) {
+   502→    ctx.strokeStyle = el.stroke
+   503→    ctx.lineWidth = el.strokeWidth
+   504→    ctx.setLineDash([10, 7])
+   505→    ctx.stroke(path)
+   506→    ctx.setLineDash([])
+   507→  }
+   508→  if (el.label) {
+   509→    ctx.font = fontString("Inter", Math.max(14, Math.min(24, el.width / 12)), 500)
+   510→    ctx.fillStyle = "rgba(60,60,70,0.75)"
+   511→    ctx.textAlign = "center"
+   512→    ctx.textBaseline = "middle"
+   513→    ctx.fillText(el.label, el.width / 2, el.height / 2, el.width - 24)
+   514→  }
+   515→}
+   516→
+   517→function drawSticky(ctx: CanvasRenderingContext2D, el: StickyElement): void {
+   518→  ctx.save()
+   519→  ctx.shadowColor = "rgba(0,0,0,0.18)"
+   520→  ctx.shadowBlur = 10
+   521→  ctx.shadowOffsetY = 4
+   522→  ctx.fillStyle = el.color
+   523→  roundRectOn(ctx, 0, 0, el.width, el.height, 6)
+   524→  ctx.fill()
+   525→  ctx.restore()
+   526→  const pad = 14
+   527→  const lines = textVisualLines(
+   528→    { text: el.text, fontFamily: el.fontFamily, fontSize: el.fontSize, fontWeight: 400, italic: false, uppercase: false, lineHeight: 1.3, letterSpacing: 0 },
+   529→    el.width,
+   530→    pad,
+   531→  )
+   532→  ctx.font = fontString(el.fontFamily, el.fontSize, 400)
+   533→  ctx.fillStyle = "#1f2937"
+   534→  ctx.textAlign = "left"
+   535→  ctx.textBaseline = "alphabetic"
+   536→  lines.forEach((line, i) => {
+   537→    ctx.fillText(line, pad, pad + i * el.fontSize * 1.3 + el.fontSize * 0.85, el.width - pad * 2)
+   538→  })
+   539→}
+   540→
+   541→function drawFreehand(ctx: CanvasRenderingContext2D, el: FreehandElement): void {
+   542→  if (el.points.length < 4) return
+   543→  ctx.translate(-el.x, -el.y)
+   544→  ctx.strokeStyle = el.stroke
+   545→  ctx.lineWidth = el.strokeWidth
+   546→  ctx.lineCap = "round"
+   547→  ctx.lineJoin = "round"
+   548→  if (el.erase) {
+   549→    ctx.globalCompositeOperation = "destination-out"
+   550→  }
+   551→  ctx.beginPath()
+   552→  ctx.moveTo(el.points[0], el.points[1])
+   553→  for (let i = 2; i < el.points.length; i += 2) ctx.lineTo(el.points[i], el.points[i + 1])
+   554→  ctx.stroke()
+   555→}
+   556→
+   557→function drawConnector(ctx: CanvasRenderingContext2D, el: ConnectorElement): void {
+   558→  const pts = el.points && el.points.length >= 4 ? el.points : [0, 0, el.width, el.height]
+   559→  ctx.translate(-el.x, -el.y)
+   560→  ctx.strokeStyle = el.stroke
+   561→  ctx.lineWidth = el.strokeWidth
+   562→  ctx.lineCap = "round"
+   563→  ctx.setLineDash(el.dash ?? [])
+   564→  ctx.beginPath()
+   565→  ctx.moveTo(pts[0], pts[1])
+   566→  for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1])
+   567→  ctx.stroke()
+   568→  ctx.setLineDash([])
+   569→  if (el.arrowHead === "arrow") {
+   570→    const n = pts.length
+   571→    const head = arrowHeadPoints(pts[n - 4], pts[n - 3], pts[n - 2], pts[n - 1], Math.max(10, el.strokeWidth * 3.4))
+   572→    ctx.fillStyle = el.stroke
+   573→    ctx.beginPath()
+   574→    ctx.moveTo(head[0].x, head[0].y)
+   575→    ctx.lineTo(head[1].x, head[1].y)
+   576→    ctx.lineTo(head[2].x, head[2].y)
+   577→    ctx.closePath()
+   578→    ctx.fill()
+   579→  }
+   580→  if (el.label) {
+   581→    const mx = (pts[0] + pts[pts.length - 2]) / 2
+   582→    const my = (pts[1] + pts[pts.length - 1]) / 2
+   583→    ctx.font = fontString("Inter", 14, 500)
+   584→    ctx.fillStyle = el.stroke
+   585→    ctx.textAlign = "center"
+   586→    ctx.fillText(el.label, mx, my - 8)
+   587→  }
+   588→}
+   589→
+   590→function drawMediaPlaceholder(ctx: CanvasRenderingContext2D, el: DesignElement): void {
+   591→  ctx.fillStyle = "rgba(120,120,140,0.18)"
+   592→  roundRectOn(ctx, 0, 0, el.width, el.height, 12)
+   593→  ctx.fill()
+   594→  ctx.fillStyle = "#6b7280"
+   595→  ctx.font = fontString("Inter", 16, 600)
+   596→  ctx.textAlign = "center"
+   597→  ctx.textBaseline = "middle"
+   598→  ctx.fillText(el.type === "media" ? "Media clip" : "Unsupported", el.width / 2, el.height / 2)
+   599→}
+   600→
+   601→function drawPlaceholder(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+   602→  ctx.fillStyle = "rgba(139,92,246,0.14)"
+   603→  ctx.fillRect(0, 0, w, h)
+   604→  ctx.strokeStyle = "#8b5cf6"
+   605→  ctx.lineWidth = 2
+   606→  ctx.setLineDash([6, 4])
+   607→  ctx.strokeRect(1, 1, w - 2, h - 2)
+   608→  ctx.setLineDash([])
+   609→}
+   610→
+   611→/** Render one page (or any subset) to an offscreen canvas. */
+   612→export async function renderPageToCanvas(doc: DesignDoc, page: PageModel, opts: RenderOpts = {}): Promise<HTMLCanvasElement> {
+   613→  let scale = opts.scale ?? 1
+   614→  if (opts.maxSide) {
+   615→    scale = Math.min(scale, opts.maxSide / Math.max(doc.width, doc.height))
+   616→  }
+   617→  const canvas = document.createElement("canvas")
+   618→  canvas.width = Math.max(1, Math.round(doc.width * scale))
+   619→  canvas.height = Math.max(1, Math.round(doc.height * scale))
+   620→  const ctx = canvas.getContext("2d")
+   621→  if (!ctx) throw new Error("Canvas 2D not available in this browser")
+   622→  try {
+   623→    if (document.fonts?.ready) await document.fonts.ready
+   624→  } catch {
+   625→    /* older browsers */
+   626→  }
+   627→  ctx.scale(canvas.width / doc.width, canvas.height / doc.height)
+   628→  if (!opts.transparent) {
+   629→    if (page.background.type === "image" && page.background.imageUrl) {
+   630→      const img = await loadImage(page.background.imageUrl)
+   631→      if (img) {
+   632→        // cover-fit
+   633→        const ratio = Math.max(doc.width / img.naturalWidth, doc.height / img.naturalHeight)
+   634→        const dw = img.naturalWidth * ratio
+   635→        const dh = img.naturalHeight * ratio
+   636→        ctx.drawImage(img, (doc.width - dw) / 2, (doc.height - dh) / 2, dw, dh)
+   637→      } else {
+   638→        paintBackground(ctx, { type: "solid", color: "#ffffff" }, doc.width, doc.height)
+   639→      }
+   640→    } else if (page.background.type === "transparent") {
+   641→      /* leave transparent */
+   642→    } else {
+   643→      paintBackground(ctx, page.background, doc.width, doc.height)
+   644→    }
+   645→  }
+   646→  for (const el of page.elements) {
+   647→    await drawElement(ctx, el)
+   648→  }
+   649→  return canvas
+   650→}
+   651→
+   652→export async function renderPageThumbnail(doc: DesignDoc, page: PageModel, width = 320): Promise<string> {
+   653→  const canvas = await renderPageToCanvas(doc, page, { scale: width / doc.width })
+   654→  return canvas.toDataURL("image/jpeg", 0.72)
+   655→}
+   656→
+   657→/* ------------------------------ SVG builder ------------------------------ */
+   658→
+   659→function esc(s: string): string {
+   660→  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+   661→}
+   662→
+   663→async function rasterizeElement(doc: DesignDoc, el: DesignElement): Promise<string | null> {
+   664→  const tmpDoc: DesignDoc = { ...doc, pages: [{ ...doc.pages[0], background: { type: "transparent" }, elements: [el] }] }
+   665→  const canvas = await renderPageToCanvas(tmpDoc, tmpDoc.pages[0], { transparent: true, scale: 2 })
+   666→  return canvas.toDataURL("image/png")
+   667→}
+   668→
+   669→/** Build a real SVG document for a page. Non-vectorizable elements are rasterized and embedded. */
+   670→export async function buildPageSvg(doc: DesignDoc, page: PageModel, scale = 1): Promise<{ svg: string; notes: string[] }> {
+   671→  const notes: string[] = []
+   672→  const W = doc.width
+   673→  const H = doc.height
+   674→  const out: string[] = []
+   675→  const defs: string[] = []
+   676→
+   677→  // background
+   678→  const bg = page.background
+   679→  if (bg.type === "solid" && bg.color) {
+   680→    out.push(`<rect width="${W}" height="${H}" fill="${bg.color}"/>`)
+   681→  } else if (bg.type === "gradient" && bg.gradient) {
+   682→    const ep = gradientEndpoints(bg.gradient.angle, W, H)
+   683→    defs.push(`<linearGradient id="bgGrad" x1="${ep.x0}" y1="${ep.y0}" x2="${ep.x1}" y2="${ep.y1}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${bg.gradient.from}"/><stop offset="1" stop-color="${bg.gradient.to}"/></linearGradient>`)
+   684→    out.push(`<rect width="${W}" height="${H}" fill="url(#bgGrad)"/>`)
+   685→  } else if (bg.type === "image" && bg.imageUrl) {
+   686→    const data = await toDataUrl(bg.imageUrl)
+   687→    if (data) out.push(`<image href="${data}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="xMidYMid slice"/>`)
+   688→    else notes.push("Background image could not be embedded (cross-origin).")
+   689→  }
+   690→
+   691→  for (const el of page.elements) {
+   692→    if (el.hidden || el.type === "group") continue
+   693→    const op = el.opacity !== 1 ? ` opacity="${el.opacity}"` : ""
+   694→    const rot = el.rotation ? ` transform="rotate(${el.rotation} ${el.x + el.width / 2} ${el.y + el.height / 2})"` : ""
+   695→    const gOpen = `<g${op}>`
+   696→    switch (el.type) {
+   697→      case "shape": {
+   698→        const s = el
+   699→        if (s.variant === "line" || s.variant === "arrow") {
+   700→          const { x1, y1, x2, y2 } = lineGeometry(s.width, s.height)
+   701→          const color = s.fill === "transparent" ? s.stroke : s.fill
+   702→          const dash = s.dash ? ` stroke-dasharray="${s.dash.join(" ")}"` : ""
+   703→          out.push(`${gOpen}<line x1="${s.x + x1}" y1="${s.y + y1}" x2="${s.x + x2}" y2="${s.y + y2}" stroke="${color}" stroke-width="${Math.max(1, s.strokeWidth || 3)}" stroke-linecap="round"${dash}${rot}/></g>`)
+   704→          if (s.variant === "arrow" && s.arrowHead !== "none") {
+   705→            const head = arrowHeadPoints(s.x + x1, s.y + y1, s.x + x2, s.y + y2, Math.max(10, (s.strokeWidth || 3) * 3.4))
+   706→            out.push(`<g${op}><polygon points="${head.map((p) => `${p.x},${p.y}`).join(" ")}" fill="${color}"${rot}/></g>`)
+   707→          }
+   708→        } else {
+   709→          const d = shapePathData(s.variant, s.width, s.height, s.cornerRadius)
+   710→          const dash = s.dash ? ` stroke-dasharray="${s.dash.join(" ")}"` : ""
+   711→          out.push(`${gOpen}<path d="${d}" transform="translate(${s.x} ${s.y})${el.rotation ? ` rotate(${el.rotation} ${s.width / 2} ${s.height / 2})` : ""}" fill="${s.fill === "transparent" ? "none" : s.fill}" stroke="${s.stroke === "transparent" ? "none" : s.stroke}" stroke-width="${s.strokeWidth}" stroke-linejoin="round"${dash}/></g>`)
+   712→        }
+   713→        break
+   714→      }
+   715→      case "text": {
+   716→        const t = el
+   717→        const pad = 2
+   718→        const lines = textVisualLines(
+   719→          { text: t.text, fontFamily: t.fontFamily, fontSize: t.fontSize, fontWeight: t.fontWeight, italic: t.italic, uppercase: t.uppercase, lineHeight: t.lineHeight, letterSpacing: t.letterSpacing, listStyle: t.listStyle },
+   720→          t.width,
+   721→          pad,
+   722→        )
+   723→        const lh = t.fontSize * t.lineHeight
+   724→        const blockH = lines.length * lh
+   725→        let offsetY = 0
+   726→        if (t.vAlign === "middle") offsetY = Math.max(0, (t.height - blockH) / 2)
+   727→        else if (t.vAlign === "bottom") offsetY = Math.max(0, t.height - blockH)
+   728→        const anchor = t.align === "center" ? "middle" : t.align === "right" ? "end" : "start"
+   729→        const ax = t.align === "center" ? t.x + t.width / 2 : t.align === "right" ? t.x + t.width : t.x
+   730→        const shadow = t.shadow ? ` filter="drop-shadow(${t.shadow.offsetX}px ${t.shadow.offsetY}px ${t.shadow.blur}px ${t.shadow.color})"` : ""
+   731→        const tspans = lines
+   732→          .map((line, i) => `<tspan x="${ax}" y="${round2(t.y + offsetY + i * lh + t.fontSize * 0.82 + pad)}">${esc(line)}</tspan>`)
+   733→          .join("")
+   734→        out.push(
+   735→          `<text font-family="${esc(t.fontFamily)}" font-size="${t.fontSize}" font-weight="${t.fontWeight}"${t.italic ? ' font-style="italic"' : ""} fill="${t.color}" text-anchor="${anchor}" letter-spacing="${t.letterSpacing}"${shadow}${rot}>${tspans}</text>`,
+   736→        )
+   737→        break
+   738→      }
+   739→      case "image": {
+   740→        const img = el
+   741→        const data = await toDataUrl(img.src)
+   742→        if (data) {
+   743→          const clipId = `clip_${img.id}`
+   744→          if (img.cornerRadius > 0) {
+   745→            defs.push(`<clipPath id="${clipId}"><rect x="${img.x}" y="${img.y}" width="${img.width}" height="${img.height}" rx="${img.cornerRadius}"/></clipPath>`)
+   746→          }
+   747→          const filter = img.filters && filtersToCss(img) !== "none" ? ` style="filter:${filtersToCss(img)}"` : ""
+   748→          const clip = img.cornerRadius > 0 ? ` clip-path="url(#${clipId})"` : ""
+   749→          const flip = img.flipH || img.flipV ? ` transform="translate(${img.x + (img.flipH ? img.width : 0)} ${img.y + (img.flipV ? img.height : 0)}) scale(${img.flipH ? -1 : 1} ${img.flipV ? -1 : 1})"` : ` transform="translate(${img.x} ${img.y})"`
+   750→          out.push(`<image href="${data}" x="${img.flipH ? 0 : 0}" y="0" width="${img.width}" height="${img.height}" preserveAspectRatio="none"${clip}${filter}${flip}${op}/>`)
+   751→        } else {
+   752→          notes.push(`Image "${img.name || img.id}" skipped (cross-origin fetch blocked).`)
+   753→        }
+   754→        break
+   755→      }
+   756→      case "icon": {
+   757→        const icon = el
+   758→        const svgStr = iconToSvg(icon.icon, icon.color, 24)
+   759→        const s = Math.min(icon.width, icon.height) / 24
+   760→        if (svgStr) {
+   761→          const inner = svgStr.replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "")
+   762→          out.push(`<g transform="translate(${icon.x} ${icon.y}) scale(${s})"${op}>${inner}</g>`)
+   763→        }
+   764→        break
+   765→      }
+   766→      case "sticky": {
+   767→        const st = el
+   768→        out.push(`${gOpen}<rect x="${st.x}" y="${st.y}" width="${st.width}" height="${st.height}" rx="6" fill="${st.color}"${rot}/></g>`)
+   769→        const lines = textVisualLines({ text: st.text, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: 400, italic: false, uppercase: false, lineHeight: 1.3, letterSpacing: 0 }, st.width, 14)
+   770→        const tspans = lines.map((line, i) => `<tspan x="${st.x + 14}" y="${round2(st.y + 14 + i * st.fontSize * 1.3 + st.fontSize * 0.85)}">${esc(line)}</tspan>`).join("")
+   771→        out.push(`<text font-family="${esc(st.fontFamily)}" font-size="${st.fontSize}" fill="#1f2937">${tspans}</text>`)
+   772→        break
+   773→      }
+   774→      case "frame": {
+   775→        const f = el
+   776→        out.push(`${gOpen}<rect x="${f.x}" y="${f.y}" width="${f.width}" height="${f.height}" rx="${f.cornerRadius}" fill="${f.fill}" stroke="${f.stroke}" stroke-width="${f.strokeWidth}" stroke-dasharray="10 7"${rot}/></g>`)
+   777→        if (f.label) {
+   778→          out.push(`<text x="${f.x + f.width / 2}" y="${f.y + f.height / 2}" font-family="Inter" font-size="16" fill="rgba(60,60,70,0.75)" text-anchor="middle" dominant-baseline="middle">${esc(f.label)}</text>`)
+   779→        }
+   780→        break
+   781→      }
+   782→      case "table": {
+   783→        const tb = el
+   784→        const cols = Math.max(...tb.rows.map((r) => r.length), 1)
+   785→        const colW = tb.width / cols
+   786→        const rowH = tb.height / Math.max(1, tb.rows.length)
+   787→        tb.rows.forEach((row, ri) => {
+   788→          row.forEach((cell, ci) => {
+   789→            const x = tb.x + ci * colW
+   790→            const y = tb.y + ri * rowH
+   791→            let fill = tb.rowBg
+   792→            if (tb.headerRow && ri === 0) fill = tb.headerBg
+   793→            else if (ri % 2 === 1) fill = tb.altRowBg
+   794→            out.push(`<rect x="${round2(x)}" y="${round2(y)}" width="${round2(colW)}" height="${round2(rowH)}" fill="${fill}" stroke="${tb.borderColor}"/>`)
+   795→            const color = tb.headerRow && ri === 0 ? tb.headerColor : tb.color
+   796→            out.push(`<text x="${round2(x + 8)}" y="${round2(y + rowH / 2)}" font-family="${esc(tb.fontFamily)}" font-size="${tb.fontSize}" fill="${color}" dominant-baseline="middle">${esc(cell ?? "")}</text>`)
+   797→          })
+   798→        })
+   799→        break
+   800→      }
+   801→      case "freehand": {
+   802→        const fh = el
+   803→        const pts: string[] = []
+   804→        for (let i = 0; i < fh.points.length; i += 2) pts.push(`${round2(fh.points[i])},${round2(fh.points[i + 1])}`)
+   805→        out.push(`<polyline points="${pts.join(" ")}" fill="none" stroke="${fh.stroke}" stroke-width="${fh.strokeWidth}" stroke-linecap="round" stroke-linejoin="round"${op}/>`)
+   806→        break
+   807→      }
+   808→      case "connector": {
+   809→        const cn = el
+   810→        const pts = cn.points && cn.points.length >= 4 ? cn.points : [cn.x, cn.y, cn.x + cn.width, cn.y + cn.height]
+   811→        const dash = cn.dash ? ` stroke-dasharray="${cn.dash.join(" ")}"` : ""
+   812→        const pstr: string[] = []
+   813→        for (let i = 0; i < pts.length; i += 2) pstr.push(`${round2(pts[i])},${round2(pts[i + 1])}`)
+   814→        out.push(`<polyline points="${pstr.join(" ")}" fill="none" stroke="${cn.stroke}" stroke-width="${cn.strokeWidth}" stroke-linecap="round"${dash}${op}/>`)
+   815→        if (cn.arrowHead === "arrow") {
+   816→          const head = arrowHeadPoints(pts[pts.length - 4], pts[pts.length - 3], pts[pts.length - 2], pts[pts.length - 1], Math.max(10, cn.strokeWidth * 3.4))
+   817→          out.push(`<polygon points="${head.map((p) => `${p.x},${p.y}`).join(" ")}" fill="${cn.stroke}"${op}/>`)
+   818→        }
+   819→        break
+   820→      }
+   821→      default: {
+   822→        // chart / qr / media — rasterize just this element
+   823→        const data = await rasterizeElement(doc, el)
+   824→        if (data) {
+   825→          out.push(`<image href="${data}" x="${el.x}" y="${el.y}" width="${el.width}" height="${el.height}"${rot}${op}/>`)
+   826→        } else {
+   827→          notes.push(`Element "${el.name || el.id}" could not be exported.`)
+   828→        }
+   829→      }
+   830→    }
+   831→  }
+   832→
+   833→  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${round2(W * scale)}" height="${round2(H * scale)}" viewBox="0 0 ${W} ${H}"><defs>${defs.join("")}</defs>${out.join("\n")}</svg>`
+   834→  return { svg, notes }
+   835→}
+   836→
+   837→function round2(v: number): number {
+   838→  return Math.round(v * 100) / 100
+   839→}
+   840→
+   841→/* ------------------------------ format exports ------------------------------ */
+   842→
+   843→function dataUrlToBlob(dataUrl: string): Blob {
+   844→  const [meta, b64] = dataUrl.split(",")
+   845→  const mime = meta.match(/:(.*?);/)?.[1] ?? "image/png"
+   846→  const bin = atob(b64)
+   847→  const arr = new Uint8Array(bin.length)
+   848→  for (let i = 0; i < bin.length; i += 1) arr[i] = bin.charCodeAt(i)
+   849→  return new Blob([arr], { type: mime })
+   850→}
+   851→
+   852→async function canvasToBlob(canvas: HTMLCanvasElement, mime: string, quality?: number): Promise<Blob> {
+   853→  return new Promise<Blob>((resolve, reject) => {
+   854→    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Canvas encode failed"))), mime, quality)
+   855→  })
+   856→}
+   857→
+   858→function sanitizeName(base: string): string {
+   859→  return (base || "design").replace(/[^\w\-. ]+/g, "_").slice(0, 60)
+   860→}
+   861→
+   862→function pagesFor(req: ExportRequest, doc: DesignDoc): PageModel[] {
+   863→  if (req.pages && req.pages.length > 0) return req.pages.map((i) => doc.pages[i]).filter(Boolean)
+   864→  return doc.pages
+   865→}
+   866→
+   867→/** Main entry — export a document in the requested format. */
+   868→export async function exportDoc(doc: DesignDoc, req: ExportRequest): Promise<ExportResult[]> {
+   869→  const base = sanitizeName(req.filenameBase || "design")
+   870→  const scale = Math.max(0.1, Math.min(3, req.scale ?? 1))
+   871→  const results: ExportResult[] = []
+   872→
+   873→  if (req.format === "json") {
+   874→    results.push({
+   875→      filename: `${base}.studio.json`,
+   876→      blob: new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }),
+   877→    })
+   878→    return results
+   879→  }
+   880→
+   881→  if (req.format === "svg") {
+   882→    const pages = pagesFor(req, doc)
+   883→    const notes: string[] = []
+   884→    if (pages.length === 1) {
+   885→      const { svg, notes: n } = await buildPageSvg(doc, pages[0])
+   886→      notes.push(...n)
+   887→      results.push({
+   888→        filename: `${base}.svg`,
+   889→        blob: new Blob([svg], { type: "image/svg+xml" }),
+   890→        note: n.length > 0 ? `SVG exported. ${n[0]}` : "SVG exported with vector text and shapes.",
+   891→      })
+   892→    } else {
+   893→      const JSZip = (await import("jszip")).default
+   894→      const zip = new JSZip()
+   895→      for (let i = 0; i < pages.length; i += 1) {
+   896→        const { svg } = await buildPageSvg(doc, pages[i])
+   897→        zip.file(`${base}-page-${i + 1}.svg`, svg)
+   898→      }
+   899→      results.push({
+   900→        filename: `${base}-svg.zip`,
+   901→        blob: await zip.generateAsync({ type: "blob" }),
+   902→        note: `${pages.length} SVG files zipped.`,
+   903→      })
+   904→    }
+   905→    return results
+   906→  }
+   907→
+   908→  if (req.format === "pdf") {
+   909→    const { jsPDF } = await import("jspdf")
+   910→    const pages = pagesFor(req, doc)
+   911→    if (pages.length === 0) return results
+   912→    let pdf: import("jspdf").jsPDF | null = null
+   913→    for (let i = 0; i < pages.length; i += 1) {
+   914→      const p = pages[i]
+   915→      const canvas = await renderPageToCanvas(doc, p, { scale: Math.min(2, Math.max(1, scale)) })
+   916→      const orientation = doc.width >= doc.height ? "landscape" : "portrait"
+   917→      if (!pdf) {
+   918→        pdf = new jsPDF({ orientation, unit: "px", format: [doc.width, doc.height], compress: true })
+   919→      } else {
+   920→        pdf.addPage([doc.width, doc.height], orientation)
+   921→      }
+   922→      const dataUrl = canvas.toDataURL("image/jpeg", 0.92)
+   923→      pdf.addImage(dataUrl, "JPEG", 0, 0, doc.width, doc.height)
+   924→    }
+   925→    if (pdf) {
+   926→      results.push({ filename: `${base}.pdf`, blob: pdf.output("blob"), note: `${pages.length} page(s) exported to PDF.` })
+   927→    }
+   928→    return results
+   929→  }
+   930→
+   931→  if (req.format === "zip") {
+   932→    const JSZip = (await import("jszip")).default
+   933→    const zip = new JSZip()
+   934→    const pages = pagesFor(req, doc)
+   935→    for (let i = 0; i < pages.length; i += 1) {
+   936→      const canvas = await renderPageToCanvas(doc, pages[i], { scale })
+   937→      const blob = await canvasToBlob(canvas, "image/png")
+   938→      zip.file(`${base}-page-${i + 1}.png`, blob)
+   939→    }
+   940→    zip.file("project.json", JSON.stringify(doc, null, 2))
+   941→    zip.file(
+   942→      "README.txt",
+   943→      [
+   944→        `Studio export — ${base}`,
+   945→        `Pages: ${pages.length}`,
+   946→        `Size: ${doc.width}×${doc.height}px`,
+   947→        "",
+   948→        "page-N.png  — flattened page images",
+   949→        "project.json — editable Studio project file (re-import via dashboard → Import)",
+   950→      ].join("\n"),
+   951→    )
+   952→    results.push({ filename: `${base}-pages.zip`, blob: await zip.generateAsync({ type: "blob" }), note: `${pages.length} PNG page(s) + project file zipped.` })
+   953→    return results
+   954→  }
+   955→
+   956→  // raster formats: png / jpeg / webp
+   957→  const mime = req.format === "jpeg" ? "image/jpeg" : req.format === "webp" ? "image/webp" : "image/png"
+   958→  const pages = pagesFor(req, doc)
+   959→  for (let i = 0; i < pages.length; i += 1) {
+   960→    const canvas = await renderPageToCanvas(doc, pages[i], {
+   961→      scale,
+   962→      transparent: req.transparent === true && (req.format === "png" || req.format === "webp"),
+   963→    })
+   964→    const quality = req.quality ?? 0.92
+   965→    const blob = await canvasToBlob(canvas, mime, quality)
+   966→    const suffix = pages.length > 1 ? `-page-${i + 1}` : ""
+   967→    const ext = req.format === "jpeg" ? "jpg" : req.format
+   968→    results.push({ filename: `${base}${suffix}.${ext}`, blob })
+   969→  }
+   970→  if (pages.length > 1) results[0].note = `${pages.length} files exported.`
+   971→  return results
+   972→}
+   973→
+   974→/** Small JPEG thumbnail of the current page, guaranteed ≤ ~64KB. */
+   975→export async function getThumbnail(doc: DesignDoc, page: PageModel): Promise<string | null> {
+   976→  try {
+   977→    const canvas = await renderPageToCanvas(doc, page, { maxSide: 480 })
+   978→    for (const q of [0.72, 0.55, 0.4, 0.28]) {
+   979→      const url = canvas.toDataURL("image/jpeg", q)
+   980→      if (url.length <= 64 * 1024 * 1.34) return url // base64 ≈ +34% vs bytes
+   981→    }
+   982→    const small = document.createElement("canvas")
+   983→    small.width = 320
+   984→    small.height = Math.max(1, Math.round((320 * doc.height) / doc.width))
+   985→    small.getContext("2d")?.drawImage(canvas, 0, 0, small.width, small.height)
+   986→    return small.toDataURL("image/jpeg", 0.4)
+   987→  } catch {
+   988→    return null
+   989→  }
+   990→}
+   991→

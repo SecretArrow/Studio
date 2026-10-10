@@ -61,7 +61,12 @@ export class MediaPool {
       if (!wanted.has(id)) this.dropMedia(el, this.audios, id)
     }
     for (const [id, el] of this.images) {
-      if (!wanted.has(id)) this.images.delete(id)
+      if (!wanted.has(id)) {
+        this.images.delete(id)
+        // drop the stale src mapping too, so a re-added clip with the same
+        // source is re-created instead of being skipped by the `srcs` check
+        this.srcs.delete(id)
+      }
     }
     for (const clip of clips) {
       if (!clip.src || clip.kind === "text" || clip.kind === "sticker") continue
@@ -94,6 +99,17 @@ export class MediaPool {
     el.pause()
     el.removeAttribute("src")
     el.load()
+    // release the audio-graph node (if any) so the dropped element is not kept
+    // alive by the srcNodes map and stays disconnected from the context
+    const node = this.srcNodes.get(el)
+    if (node) {
+      try {
+        node.disconnect()
+      } catch {
+        /* already disconnected */
+      }
+      this.srcNodes.delete(el)
+    }
     map.delete(id)
     this.srcs.delete(id)
     this.sourceDurations.delete(id)

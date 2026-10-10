@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "locales": [
+    {
+      "code": "en",
+      "en": "English",
+      "native": "English",
+      "dir": "ltr"
+    },
+    {
+      "code": "zh",
+      "en": "Chinese (Simplified)",
+      "native": "简体中文",
+      "dir": "ltr"
+    },
+    {
+      "code": "hi",
+      "en": "Hindi",
+      "native": "हिन्दी",
+      "dir": "ltr"
+    },
+    {
+      "code": "es",
+      "en": "Spanish",
+      "native": "Español",
+      "dir": "ltr"
+    },
+    {
+      "code": "fr",
+      "en": "French",
+      "native": "Français",
+      "dir": "ltr"
+    },
+    {
+      "code": "ar",
+      "en": "Arabic",
+      "native": "العربية",
+      "dir": "rtl"
+    },
+    {
+      "code": "bn",
+      "en": "Bengali",
+      "native": "বাংলা",
+      "dir": "ltr"
+    },
+    {
+      "code": "pt",
+      "en": "Portuguese",
+      "native": "Português",
+      "dir": "ltr"
+    },
+    {
+      "code": "ru",
+      "en": "Russian",
+      "native": "Русский",
+      "dir": "ltr"
+    },
+    {
+      "code": "ur",
+      "en": "Urdu",
+      "native": "اردو",
+      "dir": "rtl"
+    },
+    {
+      "code": "id",
+      "en": "Indonesian",
+      "native": "Bahasa Indonesia",
+      "dir": "ltr"
+    },
+    {
+      "code": "de",
+      "en": "German",
+      "native": "Deutsch",
+      "dir": "ltr"
+    },
+    {
+      "code": "ja",
+      "en": "Japanese",
+      "native": "日本語",
+      "dir": "ltr"
+    },
+    {
+      "code": "mr",
+      "en": "Marathi",
+      "native": "मराठी",
+      "dir": "ltr"
+    },
+    {
+      "code": "te",
+      "en": "Telugu",
+      "native": "తెలుగు",
+      "dir": "ltr"
+    },
+    {
+      "code": "tr",
+      "en": "Turkish",
+      "native": "Türkçe",
+      "dir": "ltr"
+    },
+    {
+      "code": "ta",
+      "en": "Tamil",
+      "native": "தமிழ்",
+      "dir": "ltr"
+    },
+    {
+      "code": "vi",
+      "en": "Vietnamese",
+      "native": "Tiếng Việt",
+      "dir": "ltr"
+    },
+    {
+      "code": "tl",
+      "en": "Filipino",
+      "native": "Filipino",
+      "dir": "ltr"
+    },
+    {
+      "code": "ko",
+      "en": "Korean",
+      "native": "한국어",
+      "dir": "ltr"
+    },
+    {
+      "code": "it",
+      "en": "Italian",
+      "native": "Italiano",
+      "dir": "ltr"
+    },
+    {
+      "code": "fa",
+      "en": "Persian",
+      "native": "فارسی",
+      "dir": "rtl"
+    },
+    {
+      "code": "th",
+      "en": "Thai",
+      "native": "ไทย",
+      "dir": "ltr"
+    },
+    {
+      "code": "sw",
+      "en": "Swahili",
+      "native": "Kiswahili",
+      "dir": "ltr"
+    },
+    {
+      "code": "pl",
+      "en": "Polish",
+      "native": "Polski",
+      "dir": "ltr"
+    }
+  ]
+}

@@ -400,13 +400,17 @@ const VideoEditor = forwardRef<EditorHandle, EditorProps>(function VideoEditor(
         const src = URL.createObjectURL(file)
         const info = await probeMedia(src, kind)
         if (info.dead) {
+          URL.revokeObjectURL(src)
           toast({ title: "That file could not be decoded", variant: "destructive" })
           return
         }
         const d = docRef.current
         const cfg = ensureVideoConfig(d)
         const clip = cfg.clips.find((c) => c.id === relinkId)
-        if (!clip) return
+        if (!clip) {
+          URL.revokeObjectURL(src)
+          return
+        }
         const sourceDur = kind === "image" ? Number.MAX_SAFE_INTEGER : info.duration || clip.duration
         const inPoint = Math.min(clip.inPoint, Math.max(0, sourceDur - 100))
         const duration = Math.min(clip.duration, Math.max(100, sourceDur - inPoint))
@@ -436,6 +440,7 @@ const VideoEditor = forwardRef<EditorHandle, EditorProps>(function VideoEditor(
           const src = URL.createObjectURL(file)
           const info = await probeMedia(src, kind)
           if (info.dead) {
+            URL.revokeObjectURL(src)
             toast({ title: `${file.name} could not be decoded`, variant: "destructive" })
             continue
           }

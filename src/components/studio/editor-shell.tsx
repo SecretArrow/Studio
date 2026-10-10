@@ -176,40 +176,58 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
     [projectId, share, toast, sendDocUpdate],
   )
 
+  const performSave = useCallback(async () => {
+    const doc = docRef.current
+    if (!doc) return
+    if (loaded?.cloud) {
+      const thumb = (await handleRef.current?.getThumbnail()) ?? null
+      await persistCloud(doc, thumb)
+    } else {
+      const local = await localGetProject(projectId)
+      if (local) {
+        await localSaveProject({ ...local, doc, updatedAt: Date.now() })
+        let thumb: string | null = null
+        try {
+          thumb = (await handleRef.current?.getThumbnail()) ?? null
+        } catch {
+          thumb = null
+        }
+        if (thumb) {
+          await localSaveProject({ ...local, doc, thumbnail: thumb, updatedAt: Date.now() })
+          try {
+            await saveProjectThumb(projectId, thumb)
+          } catch {
+            /* thumbnail storage is optional */
+          }
+        }
+      }
+      setSaveState("saved")
+      dirtyRef.current = false
+    }
+  }, [loaded?.cloud, persistCloud, projectId])
+
   const scheduleSave = useCallback(() => {
     dirtyRef.current = true
     setSaveState("dirty")
     if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(async () => {
-      const doc = docRef.current
-      if (!doc) return
-      if (loaded?.cloud) {
-        const thumb = (await handleRef.current?.getThumbnail()) ?? null
-        await persistCloud(doc, thumb)
-      } else {
-        const local = await localGetProject(projectId)
-        if (local) {
-          await localSaveProject({ ...local, doc, updatedAt: Date.now() })
-          let thumb: string | null = null
-          try {
-            thumb = (await handleRef.current?.getThumbnail()) ?? null
-          } catch {
-            thumb = null
-          }
-          if (thumb) {
-            await localSaveProject({ ...local, doc, thumbnail: thumb, updatedAt: Date.now() })
-            try {
-              await saveProjectThumb(projectId, thumb)
-            } catch {
-              /* thumbnail storage is optional */
-            }
-          }
-        }
-        setSaveState("saved")
-        dirtyRef.current = false
-      }
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null
+      void performSave()
     }, 1400)
-  }, [loaded?.cloud, persistCloud, projectId])
+  }, [performSave])
+
+  // Unmount with a pending autosave: flush immediately instead of leaving the
+  // debounce to fire later, so the last edits are persisted and the timer's
+  // closure is released right away (setStates after unmount are no-ops).
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current)
+        saveTimer.current = null
+        void performSave()
+      }
+    }
+  }, [performSave])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

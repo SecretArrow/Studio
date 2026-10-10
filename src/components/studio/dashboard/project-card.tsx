@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { useAppStore } from "@/lib/studio/app-store"
 import { api } from "@/lib/studio/api-client"
 import { localDeleteProject, localGetProject, getProjectThumb } from "@/lib/studio/local-store"
+import { LazyProjectPreview } from "@/components/studio/shared/lazy-project-preview"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -34,6 +35,8 @@ export function ProjectCard({ project, showTrashActions }: { project: ProjectCar
   const [name, setName] = useState(project.name)
   // thumbnail captured locally by the editor (IndexedDB), used when the server has none
   const [localThumb, setLocalThumb] = useState<{ id: string; data: string } | null>(null)
+  // set once this project's IDB thumb lookup has settled (async — guarded by alive)
+  const [thumbChecked, setThumbChecked] = useState<{ id: string } | null>(null)
 
   useEffect(() => {
     if (project.thumbnail || showTrashActions) return
@@ -45,6 +48,10 @@ export function ProjectCard({ project, showTrashActions }: { project: ProjectCar
       .catch(() => {
         /* keep icon fallback */
       })
+      .finally(() => {
+        // lookup settled — only then may the lazy cloud preview mount
+        if (alive) setThumbChecked({ id: project.id })
+      })
     return () => {
       alive = false
     }
@@ -52,6 +59,11 @@ export function ProjectCard({ project, showTrashActions }: { project: ProjectCar
 
   const localThumbData = localThumb && localThumb.id === project.id ? localThumb.data : null
   const thumb = project.thumbnail ?? localThumbData
+  // Live doc preview only for cloud projects with neither a server nor a local
+  // thumbnail (e.g. created on another device). Local drafts never hit the
+  // network, and trash keeps its current no-preview behavior.
+  const showLivePreview =
+    !project.local && !showTrashActions && !thumb && thumbChecked?.id === project.id
 
   async function refresh() {
     await qc.invalidateQueries({ queryKey: ["projects"] })
@@ -163,11 +175,20 @@ export function ProjectCard({ project, showTrashActions }: { project: ProjectCar
   return (
     <div className="group relative overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md">
       <button className="block w-full text-left" onClick={open} aria-label={`Open ${project.name}`}>
-        <div className={`flex items-center justify-center overflow-hidden bg-muted ${isWide ? "aspect-video" : "aspect-[4/5]"}`}>
+        <div className={`relative flex items-center justify-center overflow-hidden bg-muted ${isWide ? "aspect-video" : "aspect-[4/5]"}`}>
           {thumb ? (
             <img src={thumb} alt="" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
           ) : (
             <LayoutTemplate className="h-8 w-8 text-muted-foreground/50" />
+          )}
+          {showLivePreview && (
+            <LazyProjectPreview
+              projectId={project.id}
+              updatedAt={project.updatedAt}
+              width={project.width}
+              height={project.height}
+              boxAspect={isWide ? 16 / 9 : 4 / 5}
+            />
           )}
         </div>
       </button>

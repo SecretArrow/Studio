@@ -8,12 +8,17 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Separator } from "@/components/ui/separator"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useToast } from "@/hooks/use-toast"
+import { useI18n } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 import type { DesignDoc } from "@/lib/design/types"
+import { TEMPLATE_LOCALES, isTemplateLocale } from "@/lib/design/i18n/locales"
+import { localizeDesignDoc, dictionaryCoverage } from "@/lib/design/i18n/localize"
+import { loadTemplateDictionary } from "@/lib/studio/template-i18n"
 import { DocPreview } from "@/components/studio/shared/doc-preview"
 import {
-  ArrowLeft, Check, FileText, Layers, Loader2, Pencil, Presentation, ShieldCheck, Square,
+  ArrowLeft, Check, FileText, Languages, Layers, Loader2, Pencil, Presentation, ShieldCheck, Square,
 } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { TemplatePreviewBox } from "./templates-card"
@@ -52,10 +57,12 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
   const navigate = useAppStore((s) => s.navigate)
   const user = useAppStore((s) => s.user)
   const { toast } = useToast()
+  const { t } = useI18n()
   const qc = useQueryClient()
   const [authPrompt, setAuthPrompt] = useState(false)
   const [busy, setBusy] = useState(false)
   const [pageIdx, setPageIdx] = useState(0)
+  const [langSel, setLangSel] = useState<string>("original")
 
   const query = useQuery({
     queryKey: ["templates", "detail", templateId],
@@ -71,6 +78,28 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
       return null
     }
   }, [tpl])
+
+  /* --- template-text localization (client preview) --- */
+  const dictQuery = useQuery({
+    queryKey: ["templates", "dict", langSel],
+    queryFn: () => loadTemplateDictionary(langSel),
+    enabled: isTemplateLocale(langSel),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: 1,
+  })
+  const dict = dictQuery.data ?? null
+  const dictFailed =
+    isTemplateLocale(langSel) && ((dictQuery.isSuccess && dict === null) || dictQuery.isError)
+  // Failed loads fall back to the original text — reflected in the selector value.
+  const displaySel = dictFailed ? "original" : langSel
+  const displayDoc = useMemo<DesignDoc | null>(
+    () => (doc && dict ? localizeDesignDoc(doc, dict) : doc),
+    [doc, dict],
+  )
+  const coverage = useMemo(() => (doc && dict ? dictionaryCoverage(doc, dict) : null), [doc, dict])
+  const coveragePct =
+    coverage === null ? null : coverage.total === 0 ? 100 : Math.round((coverage.covered / coverage.total) * 100)
 
   const tags = useMemo<string[]>(() => {
     try {
@@ -91,7 +120,12 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
     }
     setBusy(true)
     try {
-      const res = await api.post<{ project: { id: string } }>(`/api/templates/${templateId}/use`)
+      // Send the locale only when its dictionary actually loaded — the server
+      // falls back to the profile locale (or the original text) otherwise.
+      const res = await api.post<{ project: { id: string }; localizedTo?: string | null }>(
+        `/api/templates/${templateId}/use`,
+        dict && isTemplateLocale(langSel) ? { locale: langSel } : undefined,
+      )
       await qc.invalidateQueries({ queryKey: ["projects"] })
       navigate({ name: "editor", projectId: res.project.id })
     } catch {
@@ -130,7 +164,7 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
           {/* Preview column */}
           <div className="min-w-0">
             <div className="max-w-3xl">
-              {doc ? <DocPreview doc={doc} pageIndex={pageIdx} /> : tpl.thumbnail ? (
+              {displayDoc ? <DocPreview doc={displayDoc} pageIndex={pageIdx} /> : tpl.thumbnail ? (
                 <img src={tpl.thumbnail} alt={tpl.name} className="w-full rounded-lg border" />
               ) : (
                 <div className="aspect-[4/3] w-full overflow-hidden rounded-lg border">
@@ -138,9 +172,9 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
                 </div>
               )}
             </div>
-            {doc && doc.pages.length > 1 && (
+            {displayDoc && displayDoc.pages.length > 1 && (
               <div className="mt-4 flex flex-wrap gap-3" role="tablist" aria-label="Template pages">
-                {doc.pages.map((p, i) => (
+                {displayDoc.pages.map((p, i) => (
                   <button
                     key={p.id}
                     role="tab"
@@ -153,7 +187,7 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
                     aria-label={`Show page ${i + 1}: ${p.name}`}
                   >
                     <div className="[&>div>div]:rounded-none [&>div>div]:border-0 [&>div>div]:shadow-none">
-                      <DocPreview doc={doc} pageIndex={i} />
+                      <DocPreview doc={displayDoc} pageIndex={i} />
                     </div>
                     <p className="truncate px-1.5 py-1 text-[11px] text-muted-foreground">
                       {i + 1}. {p.name}
@@ -173,9 +207,9 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
                   {TYPE_ICON[tpl.type] ?? <Square className="h-4 w-4" />}
                   <span className="capitalize">{tpl.type}</span>
                 </Badge>
-                {doc && doc.pages.length > 1 && (
+                {displayDoc && displayDoc.pages.length > 1 && (
                   <Badge variant="outline" className="gap-1">
-                    <Layers className="h-4 w-4" /> {doc.pages.length} pages
+                    <Layers className="h-4 w-4" /> {displayDoc.pages.length} pages
                   </Badge>
                 )}
               </div>
@@ -186,6 +220,39 @@ export function TemplateDetail({ templateId }: { templateId: string }) {
             </div>
 
             <Separator />
+
+            <div className="rounded-lg border bg-card p-4">
+              <label
+                htmlFor="tpl-lang-trigger"
+                className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                <Languages className="h-3.5 w-3.5" /> {t("tplLang.label")}
+              </label>
+              <Select value={displaySel} onValueChange={setLangSel}>
+                <SelectTrigger id="tpl-lang-trigger" className="mt-2 w-full" aria-label={t("tplLang.label")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="max-h-72">
+                  <SelectItem value="original">{t("tplLang.original")}</SelectItem>
+                  {TEMPLATE_LOCALES.map((l) => (
+                    <SelectItem key={l.code} value={l.code}>
+                      {l.native} ({l.en}){l.dir === "rtl" ? ` (${t("tplLang.rtl")})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {dictFailed ? (
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("tplLang.unavailable")}</p>
+              ) : isTemplateLocale(langSel) && dictQuery.isPending ? (
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> {t("common.loading")}
+                </p>
+              ) : coveragePct !== null ? (
+                <p role="status" className={cn("mt-2 text-xs leading-relaxed", coveragePct === 100 ? "text-primary" : "text-muted-foreground")}>
+                  {coveragePct === 100 ? t("tplLang.fully") : `${coveragePct}${t("tplLang.covered")}`}
+                </p>
+              ) : null}
+            </div>
 
             <div className="rounded-lg border bg-card p-4">
               <p className="flex items-start gap-2 text-sm">

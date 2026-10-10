@@ -156,6 +156,14 @@ export function BoardStage(props: BoardStageProps) {
 
   const boundsById = useMemo(() => boundsMapOf(elements), [elements])
 
+  // unmount hygiene: drop a pending view-gesture commit so it can never fire
+  // into a torn-down stage (closure released immediately)
+  useEffect(() => {
+    return () => {
+      if (gestureCommit.current) clearTimeout(gestureCommit.current)
+    }
+  }, [])
+
   /* ------------------------- container sizing ------------------------- */
   useEffect(() => {
     const wrap = wrapRef.current
