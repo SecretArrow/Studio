@@ -24,7 +24,7 @@ design and real-time collaboration** in one responsive application.
 | **Brand kits** | Palettes with WCAG contrast checks, fonts, logos, apply-to-design transform |
 | **Bulk generator** | Template + CSV → hundreds of personalized designs (tokens `{{like_this}}`), validation, duplicate detection, chunked rendering, ZIP download |
 | **Collaboration** | Share links (view/comment/edit), live presence via socket.io, threaded comments, version snapshots + restore, conflict-safe autosave |
-| **Platform** | Auth (JWT + bcrypt), dashboard with folders/favorites/trash/search, template library (234 original CC0 templates in 13 categories), asset uploads (magic-byte validated), AI assistant (optional, honest when unavailable), admin suite, audit log, notifications, PWA + offline drafts (IndexedDB), i18n (English/Indonesian), light/dark theme |
+| **Platform** | Auth (JWT + bcrypt), dashboard with folders/favorites/trash/search, template library (439 original CC0 templates in 14 categories, incl. 205 seasonal/holiday packs: Lebaran, Ramadan, pengajian, Imlek, New Year, 17 Agustus, Natal, Valentine, sales), asset uploads (magic-byte validated), AI assistant (optional, honest when unavailable), admin suite, audit log, notifications, PWA + offline drafts (IndexedDB), i18n (English/Indonesian), light/dark theme |
 
 ## Tech stack
 
@@ -43,7 +43,7 @@ cd Studio
 bun install                # or npm install / pnpm install
 cp .env.example .env       # defaults work out of the box
 bun run db:push            # create SQLite database
-bun prisma/seed.ts         # demo accounts + 234 starter templates
+bun prisma/seed.ts         # demo accounts + 439 starter templates
 bun run dev                # http://localhost:3000
 ```
 

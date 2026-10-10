@@ -105,6 +105,7 @@ export const TEMPLATE_CATEGORIES: TemplateCategory[] = [
   { id: "infographic", label: "Infographics" },
   { id: "photo", label: "Photo & Collage" },
   { id: "whiteboard", label: "Whiteboard" },
+  { id: "seasonal", label: "Seasonal & Holiday" },
 ]
 
 export const FONT_LIBRARY = [

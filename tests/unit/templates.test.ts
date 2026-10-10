@@ -7,13 +7,13 @@ const VALID_TYPES = new Set(["text", "shape", "image", "table", "chart", "qr", "
 
 describe("template library", () => {
   it("offers hundreds of templates", () => {
-    expect(TPLS.length).toBeGreaterThanOrEqual(200)
+    expect(TPLS.length).toBeGreaterThanOrEqual(400)
   })
 
   it("slugs are unique and kebab-case", () => {
     const slugs = new Set<string>()
     for (const t of TPLS) {
-      expect(slugs.has(t.slug), `duplicate slug: ${t.slug}`).toBe(false)
+      expect(slugs.has(t.slug)).toBe(false)
       slugs.add(t.slug)
       expect(t.slug).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/)
     }
@@ -21,41 +21,41 @@ describe("template library", () => {
 
   it("every template carries required metadata", () => {
     for (const t of TPLS) {
-      expect(t.name.length).toBeGreaterThan(3, t.slug)
-      expect(t.category.length).toBeGreaterThan(2, t.slug)
-      expect(t.width).toBeGreaterThan(0, t.slug)
-      expect(t.height).toBeGreaterThan(0, t.slug)
-      expect(Array.isArray(t.tags), t.slug).toBe(true)
-      expect(t.tags.length).toBeGreaterThan(0, t.slug)
+      expect(t.name.length).toBeGreaterThan(3)
+      expect(t.category.length).toBeGreaterThan(2)
+      expect(t.width).toBeGreaterThan(0)
+      expect(t.height).toBeGreaterThan(0)
+      expect(Array.isArray(t.tags)).toBe(true)
+      expect(t.tags.length).toBeGreaterThan(0)
     }
   })
 
   it("template categories map to the official category list", () => {
     const official = new Set(TEMPLATE_CATEGORIES.map((c) => c.id))
     for (const id of TPL_CATEGORY_IDS) {
-      expect(official.has(id), `unknown category ${id}`).toBe(true)
+      expect(official.has(id)).toBe(true)
     }
   })
 
   it("every template builds a valid DesignDoc with real editable elements", () => {
     for (const t of TPLS) {
       const doc = t.build()
-      expect(doc.schemaVersion).toBe(SCHEMA_VERSION, t.slug)
-      expect(doc.type).toBe(t.type, t.slug)
-      expect(doc.width).toBe(t.width, t.slug)
-      expect(doc.height).toBe(t.height, t.slug)
-      expect(doc.pages.length).toBeGreaterThan(0, t.slug)
-      expect(doc.background, `${t.slug} doc background`).toBeTruthy()
+      expect(doc.schemaVersion).toBe(SCHEMA_VERSION)
+      expect(doc.type).toBe(t.type)
+      expect(doc.width).toBe(t.width)
+      expect(doc.height).toBe(t.height)
+      expect(doc.pages.length).toBeGreaterThan(0)
+      expect(doc.background).toBeTruthy()
       const total = doc.pages.reduce((n, p) => n + p.elements.length, 0)
-      expect(total, `${t.slug} has no elements`).toBeGreaterThan(2)
+      expect(total).toBeGreaterThan(2)
       for (const page of doc.pages) {
-        expect(page.background, `${t.slug}/${page.name} page background`).toBeTruthy()
+        expect(page.background).toBeTruthy()
         for (const el of page.elements as DesignElement[]) {
-          expect(VALID_TYPES.has(el.type), `${t.slug} unknown element type ${el.type}`).toBe(true)
-          expect(Number.isFinite(el.x), `${t.slug} el.x`).toBe(true)
-          expect(Number.isFinite(el.y), `${t.slug} el.y`).toBe(true)
-          expect(el.width).toBeGreaterThan(0, `${t.slug} el.width`)
-          expect(el.height).toBeGreaterThan(0, `${t.slug} el.height`)
+          expect(VALID_TYPES.has(el.type)).toBe(true)
+          expect(Number.isFinite(el.x)).toBe(true)
+          expect(Number.isFinite(el.y)).toBe(true)
+          expect(el.width).toBeGreaterThan(0)
+          expect(el.height).toBeGreaterThan(0)
         }
       }
     }
@@ -72,15 +72,25 @@ describe("template library", () => {
   it("content is JSON-serializable for the seed", () => {
     for (const t of TPLS) {
       const json = JSON.stringify(t.build())
-      expect(json.length, `${t.slug} unexpectedly huge`).toBeLessThan(2_000_000)
+      expect(json.length).toBeLessThan(2_000_000)
       expect(() => JSON.parse(json)).not.toThrow()
     }
   })
 
   it("covers all major categories with a meaningful number of templates", () => {
     const counts = tplCountByCategory()
-    for (const cat of ["social", "story", "youtube", "marketing", "print", "business", "presentation", "resume", "event", "education", "infographic", "photo", "whiteboard"]) {
-      expect(counts[cat] ?? 0, `category ${cat} too thin`).toBeGreaterThanOrEqual(8)
+    for (const cat of ["social", "story", "youtube", "marketing", "print", "business", "presentation", "resume", "event", "education", "infographic", "photo", "whiteboard", "seasonal"]) {
+      expect(counts[cat] ?? 0).toBeGreaterThanOrEqual(8)
+    }
+  })
+
+  it("seasonal packs cover the requested holiday families", () => {
+    const all = TPLS.filter((t) => t.category === "seasonal")
+    expect(all.length).toBeGreaterThanOrEqual(200)
+    const tagHit = (needle: string) =>
+      all.filter((t) => t.tags.some((tag) => tag.includes(needle))).length
+    for (const needle of ["lebaran", "ramadan", "pengajian", "kajian", "imlek", "tahun baru", "17 agustus", "natal", "valentine", "sale"]) {
+      expect(tagHit(needle) >= 4, `seasonal pack '${needle}' too thin: ${tagHit(needle)}`).toBe(true)
     }
   })
 })

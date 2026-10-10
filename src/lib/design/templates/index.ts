@@ -11,6 +11,12 @@ import { PRINT_TPLS } from "./print"
 import { BUSINESS_TPLS } from "./business"
 import { EVENT_EDU_TPLS } from "./event-edu"
 import { DATA_TPLS } from "./data"
+import { SEASONAL_LEBARAN_TPLS } from "./seasonal-lebaran"
+import { SEASONAL_PENGAJIAN_TPLS } from "./seasonal-pengajian"
+import { SEASONAL_NEWYEAR_TPLS } from "./seasonal-newyear"
+import { SEASONAL_NASIONAL_TPLS } from "./seasonal-nasional"
+import { SEASONAL_FESTIVE_TPLS } from "./seasonal-festive"
+import { SEASONAL_SALE_TPLS } from "./seasonal-sale"
 
 export const TPLS: TemplateSpec[] = [
   ...CORE_TPLS,
@@ -21,6 +27,12 @@ export const TPLS: TemplateSpec[] = [
   ...BUSINESS_TPLS,
   ...EVENT_EDU_TPLS,
   ...DATA_TPLS,
+  ...SEASONAL_LEBARAN_TPLS,
+  ...SEASONAL_PENGAJIAN_TPLS,
+  ...SEASONAL_NEWYEAR_TPLS,
+  ...SEASONAL_NASIONAL_TPLS,
+  ...SEASONAL_FESTIVE_TPLS,
+  ...SEASONAL_SALE_TPLS,
 ]
 
 /** Category ids used by TPLS (subset of TEMPLATE_CATEGORIES, plus aliases). */
