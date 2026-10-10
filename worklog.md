@@ -96,3 +96,24 @@ Work Log:
 Stage Summary:
 - All acceptance criteria met: build/runs, project CRUD, canvas editing, undo/redo, real editable templates, exports (PNG/JPEG/WebP/PDF/SVG/ZIP/HTML/WebM/CSV/JSON), persistence, auth+permissions, responsive+touch, valid video/doc outputs, collab, free forever, tests executed & verified, no dead placeholders.
 - Commits pushed to SecretArrow/Studio main: b3f6583 → 780505d → 20f808c → dcb8dd3 → final.
+
+---
+Task ID: 6 (template expansion wave)
+Agent: main (Super Z)
+Task: "sempurnakan lagi, siapkan ratusan template menarik, samplenya pelajari dari googling"
+
+Work Log:
+- Web research (z-ai web_search x5): 2026 design trends (oversized type, gradient layering, retro-futurism, bold color, neo-minimalism, duotone) + most popular Canva-style template categories (IG posts/stories for small business, pitch decks, flyers, posters, business cards, resumes, certificates).
+- Refactor: template-builder.ts kept as pure helper layer (+ re-exported design types); 44 original templates moved to templates/core.ts via scripts/split-templates.py; new modules social.ts, stories.ts (+youtube), marketing.ts, print.ts, business.ts, event-edu.ts, data.ts; templates/index.ts aggregates TPLS (234 total).
+- New templates: 6 quote-post family, sales/engagement/content posts, 17 stories, 12 YouTube assets, 6 flyers, 4 posters, 8-logo family, ads/gift cert/loyalty/roll-up/tags/merch, menus x3, calendars/planners, cards & invitations x6, raffle/program/seating, labels/stickers/bookmark, kids printables, 5 business-card family, letterhead/invoice/estimate/receipt/agenda, LinkedIn banners, org chart/process/SWOT/OKR, 7 resumes + cover letter, 5 invitations, 3 certificates, flashcards/worksheets/lesson plan/reading log/rules/alphabet/times table/quiz, 9 decks (34 pages), 9 infographics (chart.js editable), 6 whiteboards, photo collages/wallpapers/profile frame.
+- asset-library.ts: +30 CC0 SVG assets (sun, moon, cloud, lightning, heart, leaf, mountain, coffee, cake, gift, camera, music, trophy, grad-cap, rocket, crown, planet, icecream, pizza, book, pencil, chat, ribbon, laurel, polaroid/tape frames, waves/checkers/stripes patterns, sunburst).
+- UX: /api/templates limit 200->500; templates-view limit 500 + incremental rendering (60/page) + "Load more" button + filter resets; docs updated (README/ARCHITECTURE 44->234).
+- FIX critical build breaker: src/lib/studio/local-store.ts was never in git (`.gitignore` pattern `local-*` matched it) -> tsc/next build broken for any fresh clone. Restored module (idb-keyval IndexedDB store: localSave/Get/Delete/List/migrateLocalToCloud) and scoped pattern to `/local-*`.
+- Tests: tests/unit/templates.test.ts (8 tests: >=200 count, unique slugs, metadata, category mapping, per-template build validation incl. element sanity, JSON-serializable, category coverage). vitest 44/44, eslint clean, next build OK, seed 234, playwright e2e 12/12.
+- Browser verification: gallery shows 234 templates + Load more (60->120) + search works; Clean Invoice detail renders live preview; editor opens with 36 editable elements + autosave; Q3 Marketing Plan deck opens in presentation editor with 5 slides & charts.
+- Git: local/main had diverged from origin/main (same content, different hash for test+docs commit due to file-mode churn). Rebased template commit onto origin/main (git rebase --onto origin/main f084db4 main) and pushed clean: 05a8b5a..d7f0205 main. Token only in .git/config remote URL, never in any committed file.
+
+Stage Summary:
+- Template library now 234 original CC0 editable templates in 13 categories (social 38, story 28, youtube 15, marketing 30, print 25, business 19, presentation 9, resume 9, event 15, education 17, infographic 11, photo 10, whiteboard 8); 44->234 (+190).
+- Commit d7f0205 pushed to SecretArrow/Studio main. Fresh-clone build restored (local-store fix).
+- Next ideas: template thumbnails (client-side render-to-image cache), category landing pages, "template packs" curation, per-country/holiday packs (Lebaran, Christmas), and localization of template copy (ID/EN).
