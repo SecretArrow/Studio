@@ -58,7 +58,7 @@ dev.log
 /upload/
 /download/
 /studio-inspect/
-/.zscripts/
+
 /examples/
 /agent-ctx/
 

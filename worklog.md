@@ -144,3 +144,64 @@ Work Log:
 Stage Summary:
 - Template library now 439 original CC0 editable templates in 14 categories; +205 seasonal/holiday (Lebaran & Ramadan 46, Pengajian 47, Tahun Baru/Imlek/Hijriah 39, Nasional RI 27, Festif Dunia 24, Sale Musiman 22).
 - Vitest 45/45, eslint clean, build OK, seeded & verified in browser.
+
+---
+Task ID: 8-b
+Agent: 8-b (template packs)
+Task: Curated "Paket Template" system — pack metadata + tag matcher, API tag filter, pack detail route/view, gallery pack rail, home seasonal spotlight, i18n, unit tests
+
+Work Log:
+- Verified tag vocabulary first: scripts/pack-coverage.ts (kept as scratch tool) aggregates all 439 TPLS template tags and computes any-of-substring match counts; tuned pack tag lists until every pack fit 8..120.
+- NEW src/lib/design/template-packs.ts: TemplatePack interface (id, nameId/En, descId/En, tags, accent, gradient[2], emoji, featured), TEMPLATE_PACKS x11 ordered seasonal-first (lebaran, pengajian, tahun-baru, nasional, festif, sale [all featured:true], then media-sosial, presentasi, bisnis-karier, acara-undangan, pendidikan), packById(), parseTags() (JSON-string | string[] | nullish -> string[]), packTemplateMatcher() (case-insensitive substring any-of, accepts DB JSON-string or array).
+- API /api/templates: new `tag` query param (comma-separated needles, ANY-of case-insensitive substring against parsed tags JSON). When present: fetch up to 500 rows with the SAME select, filter by tag, then apply existing q filter within the pack, honor limit on the RESULT, total = full filtered length. All existing behavior untouched when tag absent (verified ?limit=2 identical).
+- app-store.ts: AppView + { name: "template-pack"; packId: string }; viewFromHash maps packs/{packId}; hashFromView -> #/packs/{packId}. NOTE: view switch lives in dashboard.tsx (not studio-app.tsx) — added {view.name === "template-pack" && <TemplatePackView packId={view.packId}/>} there.
+- NEW template-pack-view.tsx: gradient banner (pack.gradient, emoji, localized name/desc, live "N templates" count), back button to templates, responsive TemplateCard grid, skeleton loading / error+retry / empty states, friendly not-found for unknown packId.
+- NEW template-pack-rail.tsx: "Paket template" horizontal snap rail in templates-view (inside Templates tab, above the sticky search/filter bar) — 11 gradient cards (min-w 200px, aspect 4/3, featured badge, hidden scrollbar); live per-pack counts computed client-side from the unsearched 500-row list via packTemplateMatcher; shares the gallery's TanStack cache key ["templates","list",""] so no extra first-load fetch and counts stay stable while searching. Gallery behavior unchanged.
+- dashboard.tsx: SeasonalPacksStrip on home — 5 featured packs as small gradient cards, rendered after the hero section and before Recent projects (inside DashboardHome, so it never renders in non-home contexts).
+- i18n.tsx: +12 keys en & id (packs.railTitle, packs.railHint, packs.templates, packs.seasonalSpotlight, packs.viewAll, packs.featured, pack.back, pack.notFound, pack.notFoundDesc, pack.loadError, pack.retry, pack.empty).
+- NEW tests/unit/packs.test.ts (7 tests, no message-arg expects per tsc quirk): unique ids x11, metadata shape (hex gradients/accent, lowercase tags), seasonal-first order + featured flags (and non-featured thematic), every pack matches 8..120 TPLS, packById unknown -> undefined, matcher accepts string[] + JSON-string + malformed/nullish, any-of semantics. 7/7 pass.
+- Verification: tsc clean, eslint 0 problems on all 9 touched files, GET / 200. Live API pack counts match TPLS computation exactly: lebaran 51, pengajian 52, tahun-baru 41, nasional 29, festif 26, sale 74, media-sosial 117, presentasi 15, bisnis-karier 37, acara-undangan 31, pendidikan 42. Browser (agent-browser, guest + en/id): gallery rail shows all 11 packs with correct live counts; pack view banner/grid/back work at #/packs/lebaran; unknown pack -> not-found; home strip shows 5 featured packs between hero and Recent projects; id locale strings verified (Paket template, Paket musiman, Semua template, "51 template"). Screenshots agent-ctx/pack-lebaran.png, pack-lebaran-id.png, pack-rail-id.png.
+- NOTE: mid-task the dev server returned 500s on ALL routes for ~3 min — caused by task 8-a's in-flight preview-cache.ts (createInstance import missing from idb-keyval), not by this task; recovered on its own. Its preview-cache.test.ts (createLimiter FIFO) was also failing during that window — both owned by 8-a.
+
+Stage Summary:
+- Curated pack system shipped: 11 packs (6 seasonal featured) covering 8..120 templates each over the 439-template library; tag-filtered API, pack detail pages (#/packs/{id}), gallery rail with live counts, home "Paket musiman" spotlight, EN/ID i18n, 7 unit tests green.
+- For future agents: reuse packTemplateMatcher/parseTags for any tag-based curation; TEMPLATE_PACKS is the single source of pack metadata (add packs there + i18n only if new keys needed); /api/templates?tag=a,b is the server-side pack filter (comma-separated, any-of substring).
+
+---
+Task ID: 8-a
+Agent: 8-a
+Task: Real visual previews for templates & projects (shared DocPreview, lazy doc-fetch cache, automatic project thumbnails)
+
+Work Log:
+- Extracted the DOM-based DesignDoc renderer from template-detail.tsx into NEW src/components/studio/shared/doc-preview.tsx ("use client"): bgStyle, shapeStyle/CLIP_PATHS, PreviewText/Shape/Image/Table/Chart/Qr/Sticky/Frame (PreviewElement), and MiniDocPreview renamed+exported as DocPreview({ doc, pageIndex?, className? }) — rendering behavior byte-identical. template-detail.tsx now imports DocPreview from the shared module and dropped ~300 lines of inline renderer; main preview + 5 page-thumbnail tabs verified still working (multi-page deck: tab click swaps main preview to page 2).
+- NEW src/lib/studio/preview-cache.ts: getTemplateDoc(templateId) with (a) in-memory Map, (b) in-flight promise dedupe, (c) idb-keyval own db via createStore("studio-previews","tpl-docs") (note: idb-keyval v6 API is createStore, not createInstance), key tpl:{id} → {t, doc}; templates immutable → no invalidation; (d) exported pure createLimiter(concurrency) — max 4 network fetches; only the network call is limited, IDB/memory hits bypass it. Light isDesignDoc guard; every failure → null (callers keep fallback). /api/templates/{id} response { template: { contentJson } } JSON-parsed.
+- templates-card.tsx: added LazyDocPreview({ templateId, width, height, boxAspect }) — IntersectionObserver (rootMargin 300px) starts the fetch only when the card nears the viewport; setState happens only inside the observer/promise callbacks (React-Compiler-safe); while loading/error the TemplatePreviewBox gradient stays as skeleton; on success DocPreview is overlaid with wrapper overrides [&>div>div]:rounded-none/border-0/shadow-none. KEY FINDING: the dashboard scrolls inside an inner overflow-y-auto <main>, and with the implicit viewport root an intermediate scroller clips intersection to zero (rootMargin never applies through it) → findScrollRoot() picks the nearest scrollable ancestor as observer root; verified live: cards stay gradient until scrolled near, then render. Cover math mirrors object-cover: doc wider than box → wrapper width (docAspect/boxAspect)*100% centered via left offset; doc taller → fills width, cropped by card overflow-hidden. TemplateCard renders it whenever template.thumbnail is falsy; TemplatePreviewBox still exported (fallback + detail page). cardBox() helper centralizes the media-box aspect class+value.
+- local-store.ts: added saveProjectThumb(id, dataUrl)/getProjectThumb(id) in the same default keyval store, keys `proj-thumb:{15-digit-padded-ts}:{id}` so the LRU cap (max 300) evicts oldest-by-timestamp WITHOUT reading large dataURLs; save is upsert (stale key for same id deleted) + pure thumbsToEvict() (unit-tested). Both are best-effort, never throw.
+- editor-shell.tsx: after each SUCCESSFUL save the shell persists the thumbnail — cloud autosave path reuses the already-captured thumb (at most 1 capture per save; ctrl+S persistCloud(doc,null) captures its own), then saveProjectThumb(projectId, thumb) inside its own nested try/catch so it can never break saving; local-draft path wraps getThumbnail in try/catch and stores via saveProjectThumb too. NOTE: the EditorHandle.getThumbnail?() contract ALREADY existed (required method, all editors implement it via lib/editor/export renderPageToCanvas, JPEG ≤~64KB maxSide 480) — no contract change was needed, only shell wiring.
+- project-card.tsx: when project.thumbnail is falsy and not trash, an effect (async .then with alive flag; state kept as {id,data} and derived against project.id so reused cards can't show a stale thumb) looks up getProjectThumb and renders the dataURL img object-cover in the same box; otherwise the LayoutTemplate icon remains.
+- Tests: tests/unit/preview-cache.test.ts (9 pure-logic tests: limiter concurrency cap/FIFO/error-slot-release/clamp, parseThumbKey valid+malformed, thumbsToEvict cap/no-mutation) — no fake-indexeddb needed.
+- Live e2e (agent-browser, demo login): gallery cards render real designs ("THE ISSUE", "Sprint 13 — Retro", "Q3 2026 MARKETING PLAN"…) lazily as you scroll (38+ previews while scrolling, 47 detail fetches all 200, no page errors); detail page renders; editor autosave PATCH → `proj-thumb:{ts}:{id}` (15KB JPEG dataURL) in IDB; project card fell back to the IDB thumbnail and rendered it (img loaded, 346×480) after server thumbnail was emptied. Screenshot: agent-ctx/8a-gallery-previews.png.
+
+Stage Summary:
+- Templates gallery, template detail, and project cards now show REAL rendered previews; placeholders remain only as instant skeletons/fallbacks.
+- Verification: bunx tsc --noEmit 0 errors; eslint on all changed/new files 0 problems; vitest 61/61 (8 files); curl /api/templates?limit=2 → 200, GET / → 200; dev.log clean.
+- For future agents: reuse DocPreview + getTemplateDoc for ANY surface that needs a DesignDoc visual (home "continue editing", pack rails, search results) — cache layers make repeat mounts free; findScrollRoot is required for IntersectionObserver anywhere inside the dashboard (inner scroller clips viewport-rooted observers); project thumbs are client-side only (IDB) and never sent to the server from the card layer.
+
+---
+Task ID: 8 (integration)
+Agent: main (Super Z)
+Task: "kerjakan saran berikutnya, sempurnakan apps" — integrate wave 8 (real previews + template packs), fix mobile issues, validate, ship
+
+Work Log:
+- Ran subagents 8-a (real DocPreview extraction + lazy preview cache + project thumbnails) and 8-b (curated template packs: metadata, API tag filter, pack rail/view, home spotlight, i18n, tests) in parallel; both reported green.
+- Full validation: bunx tsc --noEmit 0 errors; bunx eslint src tests 0 problems; vitest 61/61; next build OK.
+- Added tests/e2e/previews-packs.spec.ts (5 tests x chromium+mobile): gallery real previews render on scroll, pack rail navigation, pack deep link + back, home "Seasonal packs" spotlight, unknown pack not-found.
+- Fixed REAL mobile bug found by e2e: deep-link loads (boot setState / hashchange listener) left sidebarOpen=true, so the absolute-positioned mobile sidebar overlaid content with no backdrop. Centralized rule in app-store.ts sidebarOpenFor(view) (home/projects only) applied at boot (studio-app.tsx), hashchange (installHashRouter) and navigate(). e2e now 22/22 across both projects.
+- Relaxed preview-count assertion for small viewports (>=2 previews after two scroll passes).
+- Platform process note: dev-server processes spawned from tool sessions are reaped between calls (collab service died too); `next build` also clobbers the running dev server's .next. Restored the boot mechanism: NEW .zscripts/dev.sh (committed; gitignore line removed) — boot now runs bun install, db:push, defensive seed only when the template count is 0, starts mini-services, then exec bun run dev. Any future container boot self-heals the full stack.
+- Docs: README new "Template discovery" row (packs + real previews + project thumbnails); ARCHITECTURE adds template-packs.ts, preview/thumb caches, ?tag= API param.
+
+Stage Summary:
+- Wave 8 shipped: every template card renders a REAL lazy DesignDoc preview (IndexedDB-cached, concurrency-limited), project cards get automatic save-time thumbnails, 11 curated packs (6 seasonal featured) with rail/pack pages/home spotlight/EN-ID i18n and tag-filtered API.
+- Validation: tsc 0, eslint 0, vitest 61/61, e2e 22/22 (chromium+mobile), next build OK.
+- Commit pushed to SecretArrow/Studio main. Next ideas: template copy localization pass (ID/EN), pack cover curation with hand-picked hero templates, "continue editing" row with DocPreview on home.

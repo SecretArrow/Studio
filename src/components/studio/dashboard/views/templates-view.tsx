@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Search, Loader2, RotateCcw, Square, RectangleHorizontal, RectangleVertical, Type } from "lucide-react"
 import { TemplateCard, TemplateCardSkeleton, type TemplateRow } from "./templates-card"
 import { FontsView } from "./fonts-view"
+import { TemplatePackRail } from "./template-pack-rail"
 
 type Orientation = "all" | "portrait" | "landscape" | "square"
 type SortKey = "featured" | "newest" | "az"
@@ -97,6 +98,7 @@ export function TemplatesView({ search }: { search: string }) {
         </TabsList>
 
         <TabsContent value="templates" className="mt-0">
+          <TemplatePackRail />
           <div className="sticky top-0 z-10 -mx-4 space-y-3 bg-background px-4 py-3 md:-mx-6 md:px-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="relative max-w-md flex-1">

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useAppStore } from "@/lib/studio/app-store"
 import { api, ApiClientError, downloadBlob } from "@/lib/studio/api-client"
-import { localGetProject, localSaveProject } from "@/lib/studio/local-store"
+import { localGetProject, localSaveProject, saveProjectThumb } from "@/lib/studio/local-store"
 import type { DesignDoc } from "@/lib/design/types"
 import { getEditor, EditorSuspense } from "@/components/studio/editors/registry"
 import { Suspense } from "react"
@@ -160,6 +160,14 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
         dirtyRef.current = false
         // Live-follow: tell the room a new revision was saved (receivers toast + reload).
         sendDocUpdate(JSON.stringify(doc), body.project.updatedAt)
+        // Best-effort local thumbnail capture for dashboard cards — at most one
+        // capture per save, and never allowed to break the save flow above.
+        try {
+          const localThumb = thumbnail ?? ((await handleRef.current?.getThumbnail()) ?? null)
+          if (localThumb) await saveProjectThumb(projectId, localThumb)
+        } catch {
+          /* thumbnail capture is optional */
+        }
       } catch {
         setSaveState("dirty")
         toast({ title: "Offline — changes kept locally", description: "We will keep trying to save your work." })
@@ -182,8 +190,20 @@ export function EditorShell({ projectId, share }: { projectId: string; share?: s
         const local = await localGetProject(projectId)
         if (local) {
           await localSaveProject({ ...local, doc, updatedAt: Date.now() })
-          const thumb = await handleRef.current?.getThumbnail()
-          if (thumb) await localSaveProject({ ...local, doc, thumbnail: thumb, updatedAt: Date.now() })
+          let thumb: string | null = null
+          try {
+            thumb = (await handleRef.current?.getThumbnail()) ?? null
+          } catch {
+            thumb = null
+          }
+          if (thumb) {
+            await localSaveProject({ ...local, doc, thumbnail: thumb, updatedAt: Date.now() })
+            try {
+              await saveProjectThumb(projectId, thumb)
+            } catch {
+              /* thumbnail storage is optional */
+            }
+          }
         }
         setSaveState("saved")
         dirtyRef.current = false

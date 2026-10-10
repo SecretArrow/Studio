@@ -8,6 +8,7 @@ export type AppView =
   | { name: "projects"; folderId?: string }
   | { name: "templates" }
   | { name: "templates-detail"; templateId: string }
+  | { name: "template-pack"; packId: string }
   | { name: "brand" }
   | { name: "bulk" }
   | { name: "trash" }
@@ -50,6 +51,7 @@ function viewFromHash(): AppView {
   if (parts[0] === "editor" && parts[1]) return { name: "editor", projectId: parts[1], share: params.get("share") || undefined }
   if (parts[0] === "templates" && parts[1]) return { name: "templates-detail", templateId: parts[1] }
   if (parts[0] === "templates") return { name: "templates" }
+  if (parts[0] === "packs" && parts[1]) return { name: "template-pack", packId: parts[1] }
   if (parts[0] === "projects") return { name: "projects", folderId: parts[1] || undefined }
   if (parts[0] === "brand") return { name: "brand" }
   if (parts[0] === "bulk") return { name: "bulk" }
@@ -69,6 +71,7 @@ function hashFromView(view: AppView): string {
     case "projects": return `#/projects${view.folderId ? `/${view.folderId}` : ""}`
     case "templates": return "#/templates"
     case "templates-detail": return `#/templates/${view.templateId}`
+    case "template-pack": return `#/packs/${view.packId}`
     case "brand": return "#/brand"
     case "bulk": return "#/bulk"
     case "trash": return "#/trash"
@@ -77,6 +80,11 @@ function hashFromView(view: AppView): string {
     case "editor": return `#/editor/${view.projectId}${view.share ? `?share=${view.share}` : ""}`
     case "shared": return `#/shared?t=${view.token}`
   }
+}
+
+/** Sidebar visibility rule for a view — overlays content on small screens, so only home/projects open it. */
+export function sidebarOpenFor(view: AppView): boolean {
+  return view.name === "home" || view.name === "projects"
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -93,7 +101,7 @@ export const useAppStore = create<AppState>((set) => ({
     if (typeof window !== "undefined" && window.location.hash !== hash) {
       window.location.hash = hash
     }
-    set({ view, sidebarOpen: view.name === "home" || view.name === "projects" ? true : false })
+    set({ view, sidebarOpen: sidebarOpenFor(view) })
   },
   setUser: (user, workspace) => set({ user, workspace: workspace ?? null }),
   setBooted: (v) => set({ booted: v }),
@@ -105,7 +113,8 @@ export const useAppStore = create<AppState>((set) => ({
 export function installHashRouter() {
   if (typeof window === "undefined") return () => {}
   const onHash = () => {
-    useAppStore.setState({ view: viewFromHash() })
+    const next = viewFromHash()
+    useAppStore.setState({ view: next, sidebarOpen: sidebarOpenFor(next) })
   }
   window.addEventListener("hashchange", onHash)
   return () => window.removeEventListener("hashchange", onHash)

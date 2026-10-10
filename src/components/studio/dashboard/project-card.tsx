@@ -1,10 +1,10 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useAppStore } from "@/lib/studio/app-store"
 import { api } from "@/lib/studio/api-client"
-import { localDeleteProject, localGetProject } from "@/lib/studio/local-store"
+import { localDeleteProject, localGetProject, getProjectThumb } from "@/lib/studio/local-store"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
@@ -32,6 +32,26 @@ export function ProjectCard({ project, showTrashActions }: { project: ProjectCar
   const { toast } = useToast()
   const [renameOpen, setRenameOpen] = useState(false)
   const [name, setName] = useState(project.name)
+  // thumbnail captured locally by the editor (IndexedDB), used when the server has none
+  const [localThumb, setLocalThumb] = useState<{ id: string; data: string } | null>(null)
+
+  useEffect(() => {
+    if (project.thumbnail || showTrashActions) return
+    let alive = true
+    getProjectThumb(project.id)
+      .then((data) => {
+        if (alive && data) setLocalThumb({ id: project.id, data })
+      })
+      .catch(() => {
+        /* keep icon fallback */
+      })
+    return () => {
+      alive = false
+    }
+  }, [project.id, project.thumbnail, showTrashActions])
+
+  const localThumbData = localThumb && localThumb.id === project.id ? localThumb.data : null
+  const thumb = project.thumbnail ?? localThumbData
 
   async function refresh() {
     await qc.invalidateQueries({ queryKey: ["projects"] })
@@ -144,8 +164,8 @@ export function ProjectCard({ project, showTrashActions }: { project: ProjectCar
     <div className="group relative overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md">
       <button className="block w-full text-left" onClick={open} aria-label={`Open ${project.name}`}>
         <div className={`flex items-center justify-center overflow-hidden bg-muted ${isWide ? "aspect-video" : "aspect-[4/5]"}`}>
-          {project.thumbnail ? (
-            <img src={project.thumbnail} alt="" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
+          {thumb ? (
+            <img src={thumb} alt="" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
           ) : (
             <LayoutTemplate className="h-8 w-8 text-muted-foreground/50" />
           )}

@@ -1,9 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useAppStore } from "@/lib/studio/app-store"
 import { api } from "@/lib/studio/api-client"
+import { getTemplateDoc } from "@/lib/studio/preview-cache"
+import { DocPreview } from "@/components/studio/shared/doc-preview"
+import type { DesignDoc } from "@/lib/design/types"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
 import { Eye, Loader2, Pencil } from "lucide-react"
@@ -51,6 +54,13 @@ function orientationLabel(w: number, h: number): string {
   return "Square"
 }
 
+/** Media-box aspect used by the grid — kept in one place so previews can cover it exactly. */
+function cardBox(ratio: number): { cls: string; value: number } {
+  if (ratio > 1.4) return { cls: "aspect-video", value: 16 / 9 }
+  if (ratio < 0.75) return { cls: "aspect-[3/4]", value: 3 / 4 }
+  return { cls: "aspect-[4/5]", value: 4 / 5 }
+}
+
 /**
  * Deterministic gradient placeholder for the LIBRARY GRID only (no thumbnails
  * are generated at seed time). The real design always opens fully editable.
@@ -78,6 +88,92 @@ export function TemplatePreviewBox({
         </span>
       </div>
       <p className="line-clamp-3 text-sm font-semibold leading-snug drop-shadow-sm">{template.name}</p>
+    </div>
+  )
+}
+
+/* ------------------------------ lazy doc preview ------------------------------ */
+
+/**
+ * The dashboard scrolls inside an inner `overflow-y-auto` container, and an
+ * IntersectionObserver rooted at the viewport gets its intersection clipped to
+ * zero by that intermediate scroller (rootMargin never applies through it).
+ * Using the nearest scrollable ancestor as the observer root makes the 300px
+ * pre-roll work in any layout (inner scrollers, horizontal rails, window).
+ */
+function findScrollRoot(el: HTMLElement): HTMLElement | null {
+  let node: HTMLElement | null = el.parentElement
+  while (node && node !== document.body) {
+    const style = getComputedStyle(node)
+    if (style.overflowY === "auto" || style.overflowY === "scroll" || style.overflowX === "auto" || style.overflowX === "scroll") {
+      return node
+    }
+    node = node.parentElement
+  }
+  return null
+}
+
+function LazyDocPreview({
+  templateId,
+  width,
+  height,
+  boxAspect,
+}: {
+  templateId: string
+  width: number
+  height: number
+  /** aspect ratio (w/h) of the card's media box */
+  boxAspect: number
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [doc, setDoc] = useState<DesignDoc | null>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    let alive = true
+    let started = false
+    const io = new IntersectionObserver(
+      (entries) => {
+        // setState only inside the observer callback (never synchronously here)
+        if (started || !entries.some((e) => e.isIntersecting)) return
+        started = true
+        io.disconnect()
+        getTemplateDoc(templateId)
+          .then((d) => {
+            if (alive && d) setDoc(d)
+          })
+          .catch(() => {
+            /* keep gradient fallback */
+          })
+      },
+      { root: findScrollRoot(el), rootMargin: "300px" },
+    )
+    io.observe(el)
+    return () => {
+      alive = false
+      io.disconnect()
+    }
+  }, [templateId])
+
+  // object-cover math: widen the preview beyond the box when the doc is wider
+  // than the box aspect, so the real design always fills the card edge-to-edge.
+  const docAspect = height > 0 ? width / height : 1
+  const overflow = docAspect > boxAspect
+  const coverPct = overflow ? (docAspect / boxAspect) * 100 : 100
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        "pointer-events-none absolute inset-y-0 flex items-center justify-center transition-transform duration-200 group-hover:scale-[1.02]",
+        overflow ? "" : "inset-x-0",
+        "[&>div>div]:rounded-none [&>div>div]:border-0 [&>div>div]:shadow-none",
+      )}
+      style={overflow ? { width: `${coverPct}%`, left: `${(100 - coverPct) / 2}%` } : undefined}
+      aria-hidden="true"
+    >
+      {doc ? <DocPreview doc={doc} /> : null}
     </div>
   )
 }
@@ -118,12 +214,12 @@ export function TemplateCard({ template }: { template: TemplateRow }) {
   }
 
   const ratio = template.width / template.height
-  const aspect = ratio > 1.4 ? "aspect-video" : ratio < 0.75 ? "aspect-[3/4]" : "aspect-[4/5]"
+  const box = cardBox(ratio)
 
   return (
     <>
       <div className="group overflow-hidden rounded-xl border bg-card transition-shadow hover:shadow-md">
-        <div className={cn("relative overflow-hidden bg-muted", aspect)}>
+        <div className={cn("relative overflow-hidden bg-muted", box.cls)}>
           <button
             className="block h-full w-full text-left"
             onClick={openDetail}
@@ -137,7 +233,15 @@ export function TemplateCard({ template }: { template: TemplateRow }) {
                 className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
               />
             ) : (
-              <TemplatePreviewBox template={template} />
+              <>
+                <TemplatePreviewBox template={template} />
+                <LazyDocPreview
+                  templateId={template.id}
+                  width={template.width}
+                  height={template.height}
+                  boxAspect={box.value}
+                />
+              </>
             )}
           </button>
           {/* Hover overlay — desktop / keyboard; touch users tap the card for Preview */}

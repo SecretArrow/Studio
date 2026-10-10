@@ -158,6 +158,18 @@ const en = {
   "notif.type.email.queue": "Email queued",
   "notif.type.generic": "Notification",
   "notif.someone": "Someone",
+  "packs.railTitle": "Template packs",
+  "packs.railHint": "Curated collections for every moment",
+  "packs.templates": "templates",
+  "packs.seasonalSpotlight": "Seasonal packs",
+  "packs.viewAll": "View all",
+  "packs.featured": "Featured",
+  "pack.back": "All templates",
+  "pack.notFound": "Pack not found",
+  "pack.notFoundDesc": "This template pack may have been removed or the link is incorrect.",
+  "pack.loadError": "Templates could not be loaded. Check your connection and try again.",
+  "pack.retry": "Retry",
+  "pack.empty": "No templates in this pack yet.",
 }
 
 const id: typeof en = {
@@ -309,6 +321,18 @@ const id: typeof en = {
   "notif.type.email.queue": "Email masuk antrean",
   "notif.type.generic": "Notifikasi",
   "notif.someone": "Seseorang",
+  "packs.railTitle": "Paket template",
+  "packs.railHint": "Koleksi pilihan untuk setiap momen",
+  "packs.templates": "template",
+  "packs.seasonalSpotlight": "Paket musiman",
+  "packs.viewAll": "Lihat semua",
+  "packs.featured": "Unggulan",
+  "pack.back": "Semua template",
+  "pack.notFound": "Paket tidak ditemukan",
+  "pack.notFoundDesc": "Paket template ini mungkin sudah dihapus atau tautannya salah.",
+  "pack.loadError": "Template tidak dapat dimuat. Periksa koneksi Anda dan coba lagi.",
+  "pack.retry": "Coba lagi",
+  "pack.empty": "Belum ada template di paket ini.",
 }
 
 export const dictionaries = { en, id }

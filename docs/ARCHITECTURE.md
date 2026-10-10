@@ -24,14 +24,15 @@ Browser (SPA)
      ├─ design/types.ts      ★ THE document model (see below)
      ├─ design/presets.ts    sizes, categories, fonts, palettes
      ├─ design/templates/            439 original templates as DesignDocs (per-category + seasonal-pack modules)
+     ├─ design/template-packs.ts     curated pack metadata (11 packs, tag matchers)
      ├─ editor/              pure engine: history, snapping, alignment, export, geometry
-     ├─ studio/              app store (SPA router), api client, IndexedDB local drafts
+     ├─ studio/              app store (SPA router), api client, IndexedDB local drafts + preview/thumb caches
      └─ i18n.tsx             en/id dictionaries
 
 Server (same Next.js process)
  ├─ /api/auth/*        register, login, logout, me, forgot/reset/verify, password
  ├─ /api/projects/*    CRUD, duplicate, restore, versions (snapshots), conflict handling
- ├─ /api/templates/*   public template library + use (creates editable project)
+ ├─ /api/templates/*   public template library + use (creates editable project); `?tag=a,b` any-of tag filter for packs
  ├─ /api/assets(+files) uploads (magic-byte validated, SVG sanitized), serving
  ├─ /api/comments      threaded comments per project/page/element
  ├─ /api/share(+link)  share links & token resolution

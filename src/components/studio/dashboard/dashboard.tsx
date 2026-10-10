@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useAppStore, type AppView } from "@/lib/studio/app-store"
 import { useI18n } from "@/lib/i18n"
 import { DOC_CATEGORIES } from "@/lib/design/presets"
+import { featuredPacks } from "@/lib/design/template-packs"
 import { api } from "@/lib/studio/api-client"
 import { localListProjects } from "@/lib/studio/local-store"
 import { cn } from "@/lib/utils"
@@ -20,6 +21,7 @@ import { ProjectsView } from "./views/projects-view"
 import { TrashView } from "./views/trash-view"
 import { TemplatesView } from "./views/templates-view"
 import { TemplateDetail } from "./views/template-detail"
+import { TemplatePackView } from "./views/template-pack-view"
 import { BrandView } from "./views/brand-view"
 import { BulkView } from "./views/bulk-view"
 import { SettingsView } from "./views/settings-view"
@@ -170,6 +172,7 @@ export function Dashboard() {
           {view.name === "trash" && <TrashView />}
           {view.name === "templates" && <TemplatesView search={search} />}
           {view.name === "templates-detail" && <TemplateDetail templateId={view.templateId} />}
+          {view.name === "template-pack" && <TemplatePackView packId={view.packId} />}
           {view.name === "brand" && <BrandView />}
           {view.name === "bulk" && <BulkView />}
           {view.name === "settings" && <SettingsView />}
@@ -197,6 +200,7 @@ function DashboardHome({ search }: { search: string }) {
           ))}
         </div>
       </section>
+      <SeasonalPacksStrip />
       <ProjectsHomeSection search={search} />
       <FeaturedTemplatesSection />
     </div>
@@ -212,6 +216,39 @@ function CategoryChip({ label }: { label: string }) {
     >
       {label}
     </button>
+  )
+}
+
+/** Compact "Paket musiman" spotlight — featured (seasonal) template packs. */
+function SeasonalPacksStrip() {
+  const { t, locale } = useI18n()
+  const navigate = useAppStore((s) => s.navigate)
+  const packs = useMemo(() => featuredPacks(5), [])
+  return (
+    <section aria-label={t("packs.seasonalSpotlight")}>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold">{t("packs.seasonalSpotlight")}</h2>
+        <Button variant="ghost" size="sm" onClick={() => navigate({ name: "templates" })}>
+          {t("packs.viewAll")}
+        </Button>
+      </div>
+      <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {packs.map((pack) => (
+          <button
+            key={pack.id}
+            onClick={() => navigate({ name: "template-pack", packId: pack.id })}
+            aria-label={locale === "id" ? pack.nameId : pack.nameEn}
+            className="flex h-[92px] w-[200px] shrink-0 snap-start flex-col justify-between rounded-xl p-3.5 text-left text-white shadow-sm transition-transform duration-200 hover:scale-[1.02] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+            style={{ backgroundImage: `linear-gradient(135deg, ${pack.gradient[0]} 0%, ${pack.gradient[1]} 100%)` }}
+          >
+            <span className="text-2xl drop-shadow-sm" aria-hidden="true">{pack.emoji}</span>
+            <span className="text-sm font-semibold leading-snug drop-shadow-sm">
+              {locale === "id" ? pack.nameId : pack.nameEn}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
   )
 }
 

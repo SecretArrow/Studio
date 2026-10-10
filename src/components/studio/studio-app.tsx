@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef } from "react"
-import { useAppStore, installHashRouter, startView } from "@/lib/studio/app-store"
+import { useAppStore, installHashRouter, startView, sidebarOpenFor } from "@/lib/studio/app-store"
 import { api } from "@/lib/studio/api-client"
 import { AuthView } from "@/components/studio/auth-view"
 import { Dashboard } from "@/components/studio/dashboard/dashboard"
@@ -28,7 +28,7 @@ export function StudioApp() {
       navigator.serviceWorker.register("/sw.js").catch(() => {})
     }
     const initial = startView()
-    useAppStore.setState({ view: initial })
+    useAppStore.setState({ view: initial, sidebarOpen: sidebarOpenFor(initial) })
     api
       .get<{ user: null | { id: string; email: string; name: string | null; role: string; locale: string; avatarUrl: string | null }; workspace?: { id: string; name: string } | null }>("/api/auth/me")
       .then((res) => {
