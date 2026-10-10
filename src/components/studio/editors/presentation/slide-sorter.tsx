@@ -99,7 +99,7 @@ export function SlideSorter({ doc, pageIndex, canEdit, onSelect, onAdd, onDuplic
                     e.stopPropagation()
                     onDelete(i)
                   }}
-                  className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-white opacity-0 shadow transition focus:opacity-100 group-hover:opacity-100"
+                  className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-white opacity-0 shadow transition focus:opacity-100 group-hover:opacity-100 max-md:opacity-100"
                 >
                   <Trash2 className="h-3 w-3" />
                 </button>
@@ -111,3 +111,6 @@ export function SlideSorter({ doc, pageIndex, canEdit, onSelect, onAdd, onDuplic
     </section>
   )
 }
+
+
+

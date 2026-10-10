@@ -119,3 +119,32 @@ updated by X" with a Reload action, so concurrent editors are protected by the 4
 - React-Compiler-friendly patterns: no setState during render/effects (deferred), no ref
   access in render, complete `useCallback` deps.
 - i18n through `useI18n()` — English default, Indonesian bundled.
+
+## Device-adaptive layouts (PC / Android / iOS)
+
+One SPA, three form factors. The navigation model switches at `md` (768 px):
+
+- **Desktop (md+)** — collapsible sidebar rail (`Sidebar`, `w-14`/`w-60` via
+  `sidebarOpenFor`); header with full-label actions. Behavior unchanged since wave 8.
+- **Phone (<md)** — `MobileNav` (dashboard/mobile-nav.tsx) renders as the last flex
+  child of the dashboard column (never `fixed`, so it can never cover content):
+  Home · Templates · New-design FAB · Projects · **More** bottom Sheet (Brand, Bulk,
+  Trash, Settings, conditional Admin). The nav model is a pure function
+  (`mobileNavModel(isAdmin)`), unit-tested. The old absolute mobile drawer is retired
+  (`max-md:hidden` on the aside) — it had no way to re-open off home/projects and
+  stranded deep links; bottom nav is present on every dashboard view incl. cold
+  deep links (e2e-pinned). Template detail/pack views highlight the Templates slot
+  via `isNavActive`.
+- **Editors on phones** — horizontal-scroll tool rails (`flex-row overflow-x-auto`
+  → `md:flex-col md:border-r`), property panels as overlay sheets/bottom sheets
+  below their desktop breakpoint, touch-visible page controls (`max-md:opacity-100`
+  where hover-only controls were undiscoverable), wrapped toolbars, viewport-clamped
+  dialogs (`max-w-[calc(100%-2rem)]`), footer controls sized to fit 360 px.
+- **Platform layer** (`layout.tsx` + `globals.css`): `viewportFit=cover` +
+  `env(safe-area-inset-*)` on header/nav rails; `appleWebApp` standalone meta +
+  black-translucent status bar; `interactiveWidget=resizes-content` so the Android
+  keyboard resizes the `100dvh` shell; `-webkit-tap-highlight-color: transparent`,
+  `touch-action: manipulation` on interactive elements, `touch-action: none` +
+  `user-select: none` on Konva canvas surfaces, `overscroll-behavior-y: none`,
+  16px control font on `pointer: coarse` (prevents iOS focus zoom), momentum
+  scrolling on inner scrollers; PWA manifest with maskable icon, `orientation: any`.

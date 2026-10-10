@@ -717,8 +717,8 @@ const VideoEditor = forwardRef<EditorHandle, EditorProps>(function VideoEditor(
           )}
         </div>
 
-        {/* properties */}
-        <div className={cn("flex min-h-0 w-full shrink-0 flex-col border-t bg-card lg:w-80 lg:border-l lg:border-t-0")}>
+        {/* properties — height-capped below lg so preview + timeline stay reachable (panel scrolls internally) */}
+        <div className={cn("flex max-lg:max-h-[45%] min-h-0 w-full shrink-0 flex-col border-t bg-card lg:w-80 lg:border-l lg:border-t-0")}>
           <PropertiesPanel
             config={config}
             selected={selected}

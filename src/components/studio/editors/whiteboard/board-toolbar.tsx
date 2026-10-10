@@ -376,7 +376,7 @@ export function SelectionBar({
 }) {
   if (count === 0) return null
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border bg-card/95 p-1 shadow-md backdrop-blur" role="toolbar" aria-label="Selection actions">
+    <div className="pointer-events-auto absolute bottom-14 left-1/2 z-20 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border bg-card/95 p-1 shadow-md backdrop-blur sm:bottom-3" role="toolbar" aria-label="Selection actions">
       <span className="px-1.5 text-[11px] font-medium text-muted-foreground">{count} selected</span>
       <Separator orientation="vertical" className="mx-0.5 h-5" />
       <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onDuplicate} aria-label="Duplicate" title="Duplicate (Ctrl+D)">

@@ -181,8 +181,8 @@ export function Timeline(props: TimelineProps) {
 
   return (
     <div className="flex min-h-0 flex-col border-t bg-card">
-      {/* toolbar */}
-      <div className="flex items-center gap-1.5 px-2 py-1.5">
+      {/* toolbar (wraps on narrow phones: 3 buttons + zoom cluster exceed 360px on one line) */}
+      <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5">
         <Button variant="outline" size="sm" className="h-8 gap-1" disabled={!canEdit || !hasSelection} onClick={onSplit} title="Split selected clip at playhead">
           <Scissors className="h-3.5 w-3.5" /> Split
         </Button>
@@ -338,3 +338,4 @@ export function Timeline(props: TimelineProps) {
     </div>
   )
 }
+

@@ -119,4 +119,55 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /* ---- Cross-device (PC / Android / iOS) baseline ---- */
+
+  /* Kill the grey flash-tap highlight on Android/iOS; apps provide their own states. */
+  html {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* App-like scrolling: no pull-to-refresh / rubber-band chaining on the root scroller. */
+  body {
+    overscroll-behavior-y: none;
+  }
+
+  /* Remove the 300ms tap delay + double-tap zoom on interactive elements (all platforms). */
+  button,
+  a,
+  [role="button"],
+  [role="tab"],
+  [role="option"],
+  [role="menuitem"],
+  label {
+    touch-action: manipulation;
+  }
+
+  /* Canvas surfaces should not start text selection during pointer drags
+     (iOS Safari long-press, Android long-press). */
+  .konvajs-content,
+  canvas[data-engine] {
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* iOS Safari ignores maximum-scale since iOS 10 — prevent focus auto-zoom
+     on touch devices by guaranteeing a 16px control font. */
+  @media (pointer: coarse) {
+    input,
+    textarea,
+    select {
+      font-size: 16px;
+    }
+  }
+
+  /* Momentum scrolling for inner app scrollers on iOS. */
+  .overflow-y-auto,
+  .overflow-x-auto,
+  .overflow-auto {
+    -webkit-overflow-scrolling: touch;
+  }
 }

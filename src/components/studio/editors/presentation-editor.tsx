@@ -459,7 +459,7 @@ const PresentationEditor = forwardRef<EditorHandle, EditorProps>(function Presen
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background">
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
         {/* left rail */}
         <nav className="z-40 flex shrink-0 flex-row items-center gap-0.5 overflow-x-auto border-b bg-card px-1.5 py-1 md:flex-col md:overflow-visible md:border-b-0 md:border-r md:px-1.5 md:py-2" aria-label="Presentation tools">
           {TABS.map((tab) => (
@@ -495,7 +495,7 @@ const PresentationEditor = forwardRef<EditorHandle, EditorProps>(function Presen
         {/* left panel */}
         {openTab !== null ? (
           <aside
-            className="absolute inset-y-0 left-[52px] z-30 flex w-[300px] max-w-[86vw] flex-col border-r bg-card shadow-2xl md:static md:left-auto md:z-auto md:shadow-none"
+            className="absolute bottom-0 left-0 top-[52px] z-30 flex w-[300px] max-w-[86vw] flex-col border-r bg-card shadow-2xl md:static md:shadow-none"
             aria-label={`${TABS.find((t) => t.id === openTab)?.label} panel`}
           >
             <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">

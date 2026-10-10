@@ -127,7 +127,7 @@ export function PagesPanel({ api, onClose }: { api: CanvasApi; onClose?: () => v
                     aria-label="Move page left"
                     disabled={i === 0}
                     onClick={() => api.movePage(i, i - 1)}
-                    className="absolute left-0.5 top-2.5 flex h-6 w-5 items-center justify-center rounded-md bg-background/90 opacity-0 shadow transition group-hover:opacity-100 disabled:opacity-0"
+                    className="absolute left-0.5 top-2.5 flex h-6 w-5 items-center justify-center rounded-md bg-background/90 opacity-0 shadow transition group-hover:opacity-100 max-md:opacity-100 disabled:opacity-0"
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
                   </button>
@@ -136,7 +136,7 @@ export function PagesPanel({ api, onClose }: { api: CanvasApi; onClose?: () => v
                     aria-label="Move page right"
                     disabled={i === pages.length - 1}
                     onClick={() => api.movePage(i, i + 1)}
-                    className="absolute right-0.5 top-2.5 flex h-6 w-5 items-center justify-center rounded-md bg-background/90 opacity-0 shadow transition group-hover:opacity-100 disabled:opacity-0"
+                    className="absolute right-0.5 top-2.5 flex h-6 w-5 items-center justify-center rounded-md bg-background/90 opacity-0 shadow transition group-hover:opacity-100 max-md:opacity-100 disabled:opacity-0"
                   >
                     <ChevronRight className="h-3.5 w-3.5" />
                   </button>
@@ -144,7 +144,7 @@ export function PagesPanel({ api, onClose }: { api: CanvasApi; onClose?: () => v
                     type="button"
                     aria-label={`Delete ${page.name}`}
                     onClick={() => api.deletePage(i)}
-                    className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-white opacity-0 shadow transition group-hover:opacity-100"
+                    className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-destructive text-white opacity-0 shadow transition group-hover:opacity-100 max-md:opacity-100"
                   >
                     <Trash2 className="h-3 w-3" />
                   </button>
@@ -157,3 +157,6 @@ export function PagesPanel({ api, onClose }: { api: CanvasApi; onClose?: () => v
     </section>
   )
 }
+
+
+

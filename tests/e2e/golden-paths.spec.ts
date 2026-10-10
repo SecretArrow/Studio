@@ -8,7 +8,12 @@ import { test, expect } from "@playwright/test"
 test.describe("studio golden paths", () => {
   test("app boots to auth or dashboard", async ({ page }) => {
     await page.goto("/")
-    await expect(page.locator("text=Studio")).toBeVisible({ timeout: 20_000 })
+    // Boot states that legitimately contain "Studio": the spinner ("Studio is
+    // starting…"), the auth view (hidden h1 on mobile + card title + footer)
+    // or the dashboard header brand. Match only VISIBLE "Studio" text and take
+    // the first — a bare `text=Studio` strict-matched 3 auth-view elements and
+    // raced with the /api/auth/me round-trip, making this check timing-flaky.
+    await expect(page.locator("text=Studio >> visible=true").first()).toBeVisible({ timeout: 20_000 })
   })
 
   test("register a new account and see the dashboard", async ({ page }) => {

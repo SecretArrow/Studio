@@ -248,12 +248,12 @@ export function PresentMode({ doc, pageIndex, onIndexChange, onExit, onNotesChan
         ) : null}
       </div>
 
-      {/* controls */}
-      <div className="flex h-14 shrink-0 items-center justify-center gap-1.5 bg-zinc-950/95 px-3 pb-[env(safe-area-inset-bottom)]">
-        <Button variant="ghost" size="icon" className="h-11 w-11 text-white hover:bg-white/10" onClick={() => go(-1)} disabled={clamped === 0} aria-label="Previous slide">
+      {/* controls — buttons dip to 40px below sm so 6 controls + counter fit a 360px phone */}
+      <div className="flex h-14 shrink-0 items-center justify-center gap-0.5 bg-zinc-950/95 px-3 pb-[env(safe-area-inset-bottom)] sm:gap-1.5">
+        <Button variant="ghost" size="icon" className="h-10 w-10 text-white hover:bg-white/10 sm:h-11 sm:w-11" onClick={() => go(-1)} disabled={clamped === 0} aria-label="Previous slide">
           <ChevronLeft className="h-5 w-5" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-11 w-11 text-white hover:bg-white/10" onClick={() => go(1)} disabled={clamped >= pages.length - 1} aria-label="Next slide">
+        <Button variant="ghost" size="icon" className="h-10 w-10 text-white hover:bg-white/10 sm:h-11 sm:w-11" onClick={() => go(1)} disabled={clamped >= pages.length - 1} aria-label="Next slide">
           <ChevronRight className="h-5 w-5" />
         </Button>
         <span className="mx-2 min-w-[64px] text-center text-sm tabular-nums text-white/80">
@@ -262,7 +262,7 @@ export function PresentMode({ doc, pageIndex, onIndexChange, onExit, onNotesChan
         <Button
           variant="ghost"
           size="icon"
-          className="h-11 w-11 text-white hover:bg-white/10"
+          className="h-10 w-10 text-white hover:bg-white/10 sm:h-11 sm:w-11"
           onClick={() => setPlaying((p) => !p)}
           aria-label={playing ? "Pause autoplay" : "Start autoplay"}
           title={`Autoplay uses each slide's duration (${Math.round((page?.durationMs ?? 5000) / 1000)}s here)`}
@@ -272,7 +272,7 @@ export function PresentMode({ doc, pageIndex, onIndexChange, onExit, onNotesChan
         <Button
           variant={presenter ? "secondary" : "ghost"}
           size="icon"
-          className="h-11 w-11 text-white hover:bg-white/10"
+          className="h-10 w-10 text-white hover:bg-white/10 sm:h-11 sm:w-11"
           onClick={() => setPresenter((p) => !p)}
           aria-pressed={presenter}
           aria-label="Toggle presenter view"
@@ -283,7 +283,7 @@ export function PresentMode({ doc, pageIndex, onIndexChange, onExit, onNotesChan
         <Button
           variant="ghost"
           size="icon"
-          className="h-11 w-11 text-white hover:bg-white/10"
+          className="h-10 w-10 text-white hover:bg-white/10 sm:h-11 sm:w-11"
           onClick={() => {
             if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
             else void rootRef.current?.requestFullscreen?.().catch(() => {})
@@ -292,7 +292,7 @@ export function PresentMode({ doc, pageIndex, onIndexChange, onExit, onNotesChan
         >
           {isFullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}
         </Button>
-        <Button variant="ghost" size="icon" className="h-11 w-11 text-white hover:bg-white/10" onClick={onExit} aria-label="Exit presentation">
+        <Button variant="ghost" size="icon" className="h-10 w-10 text-white hover:bg-white/10 sm:h-11 sm:w-11" onClick={onExit} aria-label="Exit presentation">
           <X className="h-5 w-5" />
         </Button>
       </div>
@@ -304,3 +304,5 @@ export function PresentMode({ doc, pageIndex, onIndexChange, onExit, onNotesChan
     </div>
   )
 }
+
+

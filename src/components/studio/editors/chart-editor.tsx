@@ -422,8 +422,8 @@ export const ChartEditor = forwardRef<import("./types").EditorHandle, EditorProp
         </div>
       </div>
 
-      {/* data panel */}
-      <div className="flex w-full shrink-0 flex-col border-t bg-card md:w-80 md:border-l md:border-t-0">
+      {/* data panel — capped height below md so the preview keeps room (scrolls internally) */}
+      <div className="flex max-md:max-h-[45%] w-full shrink-0 flex-col border-t bg-card md:w-80 md:border-l md:border-t-0">
         <div className="flex items-center gap-2 border-b px-4 py-3">
           <Table2 className="h-4 w-4 text-primary" />
           <span className="text-sm font-semibold">Data</span>

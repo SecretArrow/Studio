@@ -16,6 +16,7 @@ import {
   Home, LayoutTemplate, FolderKanban, Trash2, Settings, ShieldCheck, Palette, Layers3, Plus, Search, X, Menu,
 } from "lucide-react"
 import { NewDesignDialog } from "./new-design-dialog"
+import { MobileNav } from "./mobile-nav"
 import { ProjectCard } from "./project-card"
 import { ProjectsView } from "./views/projects-view"
 import { TrashView } from "./views/trash-view"
@@ -80,7 +81,9 @@ export function Sidebar({ onNew }: { onNew: () => void }) {
       className={cn(
         "z-30 flex h-[calc(100dvh-3.5rem)] shrink-0 flex-col border-r bg-card transition-all duration-200",
         sidebarOpen ? "w-60" : "w-0 overflow-hidden md:w-14",
-        "max-md:absolute max-md:bottom-0 max-md:left-0 max-md:top-14 max-md:z-40",
+        // Mobile (<md) navigation lives in the bottom nav bar; the legacy
+        // mobile drawer is retired (it had no re-open affordance in the header).
+        "max-md:hidden",
       )}
     >
       <div className="flex items-center justify-between px-3 py-3">
@@ -181,6 +184,9 @@ export function Dashboard() {
       </div>
 
       <NewDesignDialog open={newOpen} onOpenChange={setNewOpen} />
+
+      {/* Mobile bottom navigation — last flex child, never fixed, never covers content */}
+      <MobileNav onNew={() => setNewOpen(true)} />
     </div>
   )
 }
