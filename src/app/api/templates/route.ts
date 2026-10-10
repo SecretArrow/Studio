@@ -9,7 +9,7 @@ export const GET = route(async (req: NextRequest) => {
   const category = sp.get("category") || undefined
   const type = sp.get("type") || undefined
   const featured = sp.get("featured") === "1"
-  const limit = Math.min(parseInt(sp.get("limit") || "60", 10) || 60, 200)
+  const limit = Math.min(parseInt(sp.get("limit") || "60", 10) || 60, 500)
 
   const templates = await db.template.findMany({
     where: {

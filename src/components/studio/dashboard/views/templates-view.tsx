@@ -38,12 +38,13 @@ export function TemplatesView({ search }: { search: string }) {
   const [orientation, setOrientation] = useState<Orientation>("all")
   const [sort, setSort] = useState<SortKey>("featured")
   const [localSearch, setLocalSearch] = useState(search)
+  const [visibleCount, setVisibleCount] = useState(60)
 
   const query = useQuery({
     queryKey: ["templates", "list", localSearch],
     queryFn: () =>
       api.get<{ templates: TemplateRow[]; total: number }>(
-        `/api/templates?category=all&limit=200${localSearch ? `&q=${encodeURIComponent(localSearch)}` : ""}`,
+        `/api/templates?category=all&limit=500${localSearch ? `&q=${encodeURIComponent(localSearch)}` : ""}`,
       ),
   })
 
@@ -72,6 +73,12 @@ export function TemplatesView({ search }: { search: string }) {
     setLocalSearch("")
   }
 
+  // reset incremental rendering whenever filters change
+  function changeFilter(apply: () => void) {
+    apply()
+    setVisibleCount(60)
+  }
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 md:px-6">
       <h1 className="text-xl font-bold">{t("nav.templates")}</h1>
@@ -94,14 +101,14 @@ export function TemplatesView({ search }: { search: string }) {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="relative max-w-md flex-1">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input value={localSearch} onChange={(e) => setLocalSearch(e.target.value)} placeholder="Search templates…" className="pl-9" aria-label="Search templates" />
+                <Input value={localSearch} onChange={(e) => changeFilter(() => setLocalSearch(e.target.value))} placeholder="Search templates…" className="pl-9" aria-label="Search templates" />
               </div>
               <div className="flex items-center gap-2">
                 <div className="flex rounded-lg border p-0.5" role="group" aria-label="Filter by orientation">
                   {ORIENTATIONS.map((o) => (
                     <button
                       key={o.id}
-                      onClick={() => setOrientation(o.id)}
+                      onClick={() => changeFilter(() => setOrientation(o.id))}
                       title={o.label}
                       aria-pressed={orientation === o.id}
                       className={`flex min-h-[36px] items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors sm:px-3 sm:text-sm ${
@@ -113,7 +120,7 @@ export function TemplatesView({ search }: { search: string }) {
                     </button>
                   ))}
                 </div>
-                <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
+                <Select value={sort} onValueChange={(v) => changeFilter(() => setSort(v as SortKey))}>
                   <SelectTrigger className="w-[150px]" aria-label="Sort templates">
                     <SelectValue placeholder="Sort" />
                   </SelectTrigger>
@@ -129,7 +136,7 @@ export function TemplatesView({ search }: { search: string }) {
               {TEMPLATE_CATEGORIES.map((c) => (
                 <button
                   key={c.id}
-                  onClick={() => setCategory(c.id)}
+                  onClick={() => changeFilter(() => setCategory(c.id))}
                   className={`min-h-[36px] rounded-full border px-4 text-sm transition-colors ${
                     category === c.id ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent"
                   }`}
@@ -172,10 +179,20 @@ export function TemplatesView({ search }: { search: string }) {
                 {query.isFetching && <Loader2 className="ml-2 inline h-3 w-3 animate-spin align-[-2px]" />}
               </p>
               <div className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                {visible.map((tpl) => (
+                {visible.slice(0, visibleCount).map((tpl) => (
                   <TemplateCard key={tpl.id} template={tpl} />
                 ))}
               </div>
+              {visible.length > visibleCount && (
+                <div className="mt-8 flex justify-center">
+                  <Button variant="outline" size="lg" className="min-h-[44px] px-8" onClick={() => setVisibleCount((c) => c + 60)}>
+                    Load more templates ({visible.length - visibleCount} remaining)
+                  </Button>
+                </div>
+              )}
+              {visible.length <= visibleCount && visible.length > 60 && (
+                <p className="mt-8 text-center text-xs text-muted-foreground">That&apos;s every template — more are added regularly.</p>
+              )}
             </>
           )}
         </TabsContent>

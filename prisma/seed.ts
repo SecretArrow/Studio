@@ -6,7 +6,7 @@ import { PrismaClient } from "@prisma/client"
 import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import bcrypt from "bcryptjs"
-import { TPLS, tplCountByCategory } from "../src/lib/design/template-builder"
+import { TPLS, tplCountByCategory } from "../src/lib/design/templates"
 
 const db = new PrismaClient()
 

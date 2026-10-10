@@ -23,7 +23,7 @@ Browser (SPA)
  └─ lib/
      ├─ design/types.ts      ★ THE document model (see below)
      ├─ design/presets.ts    sizes, categories, fonts, palettes
-     ├─ design/template-builder.ts  44 original templates as DesignDocs
+     ├─ design/templates/            234 original templates as DesignDocs (per-category modules)
      ├─ editor/              pure engine: history, snapping, alignment, export, geometry
      ├─ studio/              app store (SPA router), api client, IndexedDB local drafts
      └─ i18n.tsx             en/id dictionaries
